@@ -1,0 +1,20 @@
+name: Windows GUI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build GUI
+        run: cargo build --release --bin deobf-gui
+      - name: Upload GUI
+        uses: actions/upload-artifact@v4
+        with:
+          name: deobf-windows-gui
+          path: target/release/deobf-gui.exe
