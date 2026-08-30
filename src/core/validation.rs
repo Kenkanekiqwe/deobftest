@@ -13,7 +13,7 @@ pub fn validate(analysis: &Analysis, profile: &ProtectionProfile) -> Result<Vali
     profile.validate()?;
 
     let mut warnings = Vec::new();
-    if analysis.kind == ArtifactKind::Unknown {
+    if analysis.kind == ArtifactKind::Raw {
         warnings.push("input format is unknown; protection will use generic handling".to_owned());
     }
     if analysis.has_debug_markers {
@@ -27,7 +27,9 @@ pub fn validate(analysis: &Analysis, profile: &ProtectionProfile) -> Result<Vali
     {
         return Ok(ValidationReport {
             supported: false,
-            warnings: vec!["executable format was detected but executable metadata is incomplete".to_owned()],
+            warnings: vec![
+                "executable format was detected but executable metadata is incomplete".to_owned(),
+            ],
         });
     }
 
