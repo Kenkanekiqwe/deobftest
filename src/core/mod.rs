@@ -1,6 +1,7 @@
 pub mod analyzer;
 pub mod artifact;
 pub mod container;
+pub mod engine;
 pub mod formats;
 pub mod integrity;
 pub mod limits;
@@ -8,17 +9,16 @@ pub mod manifest;
 pub mod passes;
 pub mod pipeline;
 pub mod profile;
-pub mod report;
 pub mod validation;
 
 pub use analyzer::{analyze, Analysis, Architecture};
 pub use artifact::ArtifactInfo;
 pub use container::{pack, unpack, ContainerInfo};
+pub use engine::{analyze_only, kind_name, protect, AnalysisJson, EngineOptions, EngineResult};
 pub use formats::{parse_pe, zip_has_manifest, BinaryFormat, PeInfo};
 pub use limits::ResourceLimits;
 pub use manifest::{ArtifactKind, ProtectionManifest};
 pub use passes::{IntegrityGuard, SizeInvariant};
 pub use pipeline::{Pass, Pipeline};
 pub use profile::{ProtectionProfile, Strength};
-pub use report::AnalysisReport;
 pub use validation::{validate, ValidationReport};
