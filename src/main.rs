@@ -62,22 +62,27 @@ fn aad(index: u64, plain_len: u64, flags: u8) -> Vec<u8> {
     let mut a = Vec::with_capacity(32); a.extend_from_slice(MAGIC); a.push(VERSION); a.push(flags); a.extend_from_slice(&index.to_le_bytes()); a.extend_from_slice(&plain_len.to_le_bytes()); a
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+const TEXT_ALPHABET: &[u8] = b"!@#$%^&*()-_=+[]{};:,.<>?/|~`";
+
+fn text_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes { out.push(HEX[(b >> 4) as usize] as char); out.push(HEX[(b & 0x0F) as usize] as char); }
+    for &b in bytes {
+        out.push(TEXT_ALPHABET[(b >> 4) as usize] as char);
+        out.push(TEXT_ALPHABET[(b & 0x0f) as usize] as char);
+    }
     out
 }
 
-fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    let s = s.trim();
-    if !s.len().is_multiple_of(2) { bail!("invalid encrypted text"); }
-    let bytes = s.as_bytes();
+fn text_decode(s: &str) -> Result<Vec<u8>> {
+    let mut map = [255u8; 256];
+    for (i, &c) in TEXT_ALPHABET.iter().enumerate() { map[c as usize] = i as u8; }
+    let bytes = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect::<Vec<_>>();
+    if bytes.len() % 2 != 0 { bail!("invalid encrypted text"); }
     let mut out = Vec::with_capacity(bytes.len() / 2);
-    for i in (0..bytes.len()).step_by(2) {
-        let hi = (bytes[i] as char).to_digit(16).ok_or_else(|| anyhow::anyhow!("invalid encrypted text"))?;
-        let lo = (bytes[i + 1] as char).to_digit(16).ok_or_else(|| anyhow::anyhow!("invalid encrypted text"))?;
-        out.push(((hi << 4) | lo) as u8);
+    for pair in bytes.chunks_exact(2) {
+        let hi = map[pair[0] as usize]; let lo = map[pair[1] as usize];
+        if hi == 255 || lo == 255 { bail!("invalid encrypted text"); }
+        out.push((hi << 4) | lo);
     }
     Ok(out)
 }
@@ -86,41 +91,24 @@ fn text_encrypt(text: Option<String>, pass: &[u8]) -> Result<()> {
     let input = match text { Some(v) => v, None => { print!("✦ Text: "); std::io::stdout().flush()?; let mut v = String::new(); std::io::stdin().read_line(&mut v)?; v.trim_end_matches(['\r', '\n']).to_owned() } };
     let mut salt = [0u8; SALT_LEN]; let mut base = [0u8; NONCE_LEN]; OsRng.fill_bytes(&mut salt); OsRng.fill_bytes(&mut base);
     let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
-    let aad = b"DEOBF-TEXT-V2";
-    let encrypted = cipher.encrypt(XNonce::from(base), chacha20poly1305::aead::Payload { msg: input.as_bytes(), aad }).map_err(|_| anyhow::anyhow!("text encryption failed"))?;
-    println!();
-    println!("╔══════════════════════════════════════════════════════╗");
-    println!("║                 ✦ DEOBF TEXT ✦                      ║");
-    println!("╚══════════════════════════════════════════════════════╝");
-    println!();
-    println!("{}", TEXT_MAGIC);
-    println!("SALT:{}", hex_encode(&salt));
-    println!("NONCE:{}", hex_encode(&base));
-    println!("DATA:{}", hex_encode(&encrypted));
-    println!("꧁━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━꧂");
-    println!("✓ Encrypted successfully");
+    let encrypted = cipher.encrypt(XNonce::from(base), chacha20poly1305::aead::Payload { msg: input.as_bytes(), aad: b"DEOBF-TEXT-V2" }).map_err(|_| anyhow::anyhow!("text encryption failed"))?;
+    let mut payload = Vec::with_capacity(SALT_LEN + NONCE_LEN + encrypted.len());
+    payload.extend_from_slice(&salt); payload.extend_from_slice(&base); payload.extend_from_slice(&encrypted);
+    println!("{}", text_encode(&payload));
     Ok(())
 }
 
 fn text_decrypt(text: Option<String>, pass: &[u8]) -> Result<()> {
     let input = match text { Some(v) => v, None => { print!("✦ Ciphertext: "); std::io::stdout().flush()?; let mut v = String::new(); std::io::stdin().read_line(&mut v)?; v } };
-    let mut salt_hex = None; let mut nonce_hex = None; let mut data_hex = None;
-    for line in input.lines() {
-        let line = line.trim();
-        if let Some(v) = line.strip_prefix("SALT:") { salt_hex = Some(v); }
-        else if let Some(v) = line.strip_prefix("NONCE:") { nonce_hex = Some(v); }
-        else if let Some(v) = line.strip_prefix("DATA:") { data_hex = Some(v); }
-    }
-    let salt = hex_decode(salt_hex.ok_or_else(|| anyhow::anyhow!("missing SALT"))?)?;
-    let nonce_bytes = hex_decode(nonce_hex.ok_or_else(|| anyhow::anyhow!("missing NONCE"))?)?;
-    let encrypted = hex_decode(data_hex.ok_or_else(|| anyhow::anyhow!("missing DATA"))?)?;
-    if salt.len() != SALT_LEN || nonce_bytes.len() != NONCE_LEN || encrypted.len() < TAG_LEN { bail!("invalid DEOBF text"); }
-    let mut salt_arr = [0u8; SALT_LEN]; salt_arr.copy_from_slice(&salt);
-    let mut nonce_arr = [0u8; NONCE_LEN]; nonce_arr.copy_from_slice(&nonce_bytes);
-    let key = derive_key(pass, &salt_arr)?; let cipher = XChaCha20Poly1305::new((&key).into());
-    let plain = cipher.decrypt(XNonce::from(nonce_arr), chacha20poly1305::aead::Payload { msg: &encrypted, aad: b"DEOBF-TEXT-V2" }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified text"))?;
+    let payload = text_decode(&input)?;
+    if payload.len() < SALT_LEN + NONCE_LEN + TAG_LEN { bail!("invalid encrypted text"); }
+    let (salt_bytes, rest) = payload.split_at(SALT_LEN); let (nonce_bytes, encrypted) = rest.split_at(NONCE_LEN);
+    let mut salt = [0u8; SALT_LEN]; salt.copy_from_slice(salt_bytes);
+    let mut nonce = [0u8; NONCE_LEN]; nonce.copy_from_slice(nonce_bytes);
+    let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
+    let plain = cipher.decrypt(XNonce::from(nonce), chacha20poly1305::aead::Payload { msg: encrypted, aad: b"DEOBF-TEXT-V2" }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified text"))?;
     let text = String::from_utf8(plain).map_err(|_| anyhow::anyhow!("decrypted data is not valid UTF-8"))?;
-    println!(); println!("╔══════════════════════════════════════════════════════╗"); println!("║                 ✦ DEOBF TEXT ✦                      ║"); println!("╚══════════════════════════════════════════════════════╝"); println!(); println!("✓ Decrypted successfully"); println!(); println!("❯ {}", text); Ok(())
+    println!("{}", text); Ok(())
 }
 
 fn protect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
