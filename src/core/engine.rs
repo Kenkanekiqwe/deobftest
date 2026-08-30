@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -16,7 +16,11 @@ pub struct EngineOptions {
 
 impl Default for EngineOptions {
     fn default() -> Self {
-        Self { profile: "balanced".into(), verify: true, add_integrity: true }
+        Self {
+            profile: "balanced".into(),
+            verify: true,
+            add_integrity: true,
+        }
     }
 }
 
@@ -38,6 +42,8 @@ pub struct EngineResult {
     pub input_hash: String,
     pub output_hash: String,
     pub passes: Vec<String>,
+    pub compatibility_mode: bool,
+    pub format_preserved: bool,
 }
 
 impl From<Analysis> for AnalysisJson {
@@ -70,24 +76,53 @@ pub fn analyze_only(data: &[u8]) -> Result<AnalysisJson> {
     Ok(analyze(data)?.into())
 }
 
+/// Runs only format-safe transformations. The artifact bytes remain unchanged
+/// by the generic engine so PE/JAR/ZIP/etc. stay directly usable. Real binary
+/// transformation belongs in a format-aware backend with its own verifier.
 pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, EngineResult)> {
     let started = Instant::now();
+    if data.is_empty() {
+        bail!("artifact is empty");
+    }
+
     let analysis = analyze(&data).context("artifact analysis failed")?;
     let selected = profile(&options.profile);
     let mut pipeline = Pipeline::new().add(SizeInvariant);
+
     if options.add_integrity {
         pipeline = pipeline.add(IntegrityGuard);
     }
     if options.verify {
         pipeline = pipeline.add(super::pipeline::VerifyPass);
     }
-    let passes = pipeline.names().into_iter().map(str::to_owned).collect();
+
+    let passes = pipeline
+        .names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
     let input_size = data.len() as u64;
     let input_hash = digest(&data);
-    let output = pipeline.run(data, &selected).context("protection pipeline failed")?;
+    let output = pipeline
+        .run(data, &selected)
+        .context("protection pipeline failed")?;
     let output_size = output.len() as u64;
     let output_hash = digest(&output);
-    Ok((output, EngineResult { analysis: analysis.into(), input_size, output_size, elapsed_ms: started.elapsed().as_millis(), input_hash, output_hash, passes }))
+
+    Ok((
+        output,
+        EngineResult {
+            analysis: analysis.into(),
+            input_size,
+            output_size,
+            elapsed_ms: started.elapsed().as_millis(),
+            input_hash,
+            output_hash,
+            passes,
+            compatibility_mode: true,
+            format_preserved: true,
+        },
+    ))
 }
 
 pub fn kind_name(kind: ArtifactKind) -> &'static str {
