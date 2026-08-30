@@ -1,6 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use deobf::{analyze_only, protect, unprotect_file, verify_compatible, EngineOptions};
+use deobf::{analyze_only, protect_file, unprotect_file, verify_compatible, EngineOptions};
 use iced::widget::{button, column, container, pick_list, row, text, text_input};
 use iced::{Element, Length, Task, Theme};
 use rfd::FileDialog;
@@ -33,8 +33,7 @@ impl App {
         match message {
             Message::PickInput => {
                 if let Some(path) = FileDialog::new().pick_file() {
-                    self.input = path.display().to_string();
-                    self.analysis = None;
+                    self.input = path.display().to_string(); self.analysis = None;
                     if self.output.is_empty() { self.output = protected_output(&path).display().to_string(); }
                     self.status = "File selected. Analyze it before protection.".into();
                 }
@@ -71,15 +70,9 @@ impl App {
         if self.input.is_empty() || self.output.is_empty() { self.status = "Choose input and output files.".into(); return; }
         self.busy = true;
         let profile = self.profile.unwrap_or(Profile::Balanced);
-        let input = PathBuf::from(&self.input);
-        let output = PathBuf::from(&self.output);
-        let result = std::fs::read(&input).map_err(anyhow::Error::from).and_then(|data| {
-            let options = EngineOptions { profile: profile.engine_name().to_owned(), verify: true, add_integrity: true };
-            let (payload, report) = protect(data, &options)?;
-            std::fs::write(&output, payload)?;
-            Ok(report)
-        });
-        self.status = match result {
+        let input = PathBuf::from(&self.input); let output = PathBuf::from(&self.output);
+        let options = EngineOptions { profile: profile.engine_name().to_owned(), verify: true, add_integrity: true };
+        self.status = match protect_file(&input, &output, self.password.as_bytes(), &options) {
             Ok(report) => format!("Encrypted package created: {} → {} bytes, {} validation pass(es), authenticated integrity enabled.", report.input_size, report.output_size, report.passes.len()),
             Err(error) => format!("Protection failed: {error:#}"),
         };
@@ -90,8 +83,11 @@ impl App {
         if self.password.len() < 12 { self.status = "Password must contain at least 12 characters.".into(); return; }
         if self.input.is_empty() || self.output.is_empty() { self.status = "Choose package and restore output.".into(); return; }
         self.busy = true;
-        let result = unprotect_file(PathBuf::from(&self.input).as_path(), PathBuf::from(&self.output).as_path(), self.password.as_bytes());
-        self.status = match result { Ok(()) => "Original payload restored and authenticated successfully.".into(), Err(error) => format!("Restore failed: {error:#}") };
+        let input = PathBuf::from(&self.input); let output = PathBuf::from(&self.output);
+        self.status = match unprotect_file(&input, &output, self.password.as_bytes()) {
+            Ok(()) => "Original payload restored and authenticated successfully.".into(),
+            Err(error) => format!("Restore failed: {error:#}"),
+        };
         self.busy = false;
     }
 
