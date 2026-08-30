@@ -2,4 +2,3 @@
 *.deobf
 *.deobf-tmp
 *.deobf-write-tmp
-Cargo.lock
