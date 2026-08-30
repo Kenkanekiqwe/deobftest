@@ -3,6 +3,7 @@ pub mod core;
 pub use core::{
     analyze,
     analyze_only,
+    protect,
     protect_compatible,
     verify_compatible,
     Analysis,
@@ -17,7 +18,6 @@ pub use core::{
     Pass,
     Pipeline,
     ProtectionManifest,
-    ProtectionProfile,
     ResourceLimits,
     Strength,
 };
