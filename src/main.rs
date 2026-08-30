@@ -16,7 +16,7 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 const MAX_PAD: usize = 4096;
-const TEXT_ALPHABET: &[u8; 64] = b"!@#$%^&*()-_=+[]{};:,.<>?abcdefghijklmnopqrstuvwx";
+const TEXT_ALPHABET: &[u8; 64] = b"!@#$%^&*()-_=+[]{};:,.<>?abcdefghijklmnopqrstuvwxyz0123456789";
 
 #[derive(Parser)]
 #[command(name = "deobf", version, about = "Hardened custom authenticated file protection")]
