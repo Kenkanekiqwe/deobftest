@@ -16,6 +16,7 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 const MAX_PAD: usize = 4096;
+const TEXT_ALPHABET: &[u8; 64] = b"!@#$%^&*()-_=+[]{};:,.<>?abcdefghijklmnopqrstuvwx";
 
 #[derive(Parser)]
 #[command(name = "deobf", version, about = "Hardened custom authenticated file protection")]
@@ -61,15 +62,10 @@ fn aad(index: u64, plain_len: u64, flags: u8) -> Vec<u8> {
     let mut a = Vec::with_capacity(32); a.extend_from_slice(MAGIC); a.push(VERSION); a.push(flags); a.extend_from_slice(&index.to_le_bytes()); a.extend_from_slice(&plain_len.to_le_bytes()); a
 }
 
-// 64 printable symbols. 3 bytes become 4 symbols (~33% expansion).
-const TEXT_ALPHABET: &[u8; 64] = b"!@#$%^&*()-_=+[]{};:,.<>?abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
 fn text_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {
-        let a = chunk[0];
-        let b = *chunk.get(1).unwrap_or(&0);
-        let c = *chunk.get(2).unwrap_or(&0);
+        let a = chunk[0]; let b = *chunk.get(1).unwrap_or(&0); let c = *chunk.get(2).unwrap_or(&0);
         out.push(TEXT_ALPHABET[(a >> 2) as usize] as char);
         out.push(TEXT_ALPHABET[((a & 3) << 4 | b >> 4) as usize] as char);
         out.push(if chunk.len() > 1 { TEXT_ALPHABET[((b & 15) << 2 | c >> 6) as usize] as char } else { '=' });
@@ -102,10 +98,8 @@ fn text_encrypt(text: Option<String>, pass: &[u8]) -> Result<()> {
     let mut salt = [0u8; SALT_LEN]; let mut base = [0u8; NONCE_LEN]; OsRng.fill_bytes(&mut salt); OsRng.fill_bytes(&mut base);
     let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
     let encrypted = cipher.encrypt(&XNonce::from(base), chacha20poly1305::aead::Payload { msg: input.as_bytes(), aad: b"DEOBF-TEXT-V2" }).map_err(|_| anyhow::anyhow!("text encryption failed"))?;
-    let mut payload = Vec::with_capacity(SALT_LEN + NONCE_LEN + encrypted.len());
-    payload.extend_from_slice(&salt); payload.extend_from_slice(&base); payload.extend_from_slice(&encrypted);
-    println!("{}", text_encode(&payload));
-    Ok(())
+    let mut payload = Vec::with_capacity(SALT_LEN + NONCE_LEN + encrypted.len()); payload.extend_from_slice(&salt); payload.extend_from_slice(&base); payload.extend_from_slice(&encrypted);
+    println!("{}", text_encode(&payload)); Ok(())
 }
 
 fn text_decrypt(text: Option<String>, pass: &[u8]) -> Result<()> {
@@ -113,8 +107,7 @@ fn text_decrypt(text: Option<String>, pass: &[u8]) -> Result<()> {
     let payload = text_decode(&input)?;
     if payload.len() < SALT_LEN + NONCE_LEN + TAG_LEN { bail!("invalid encrypted text"); }
     let (salt_bytes, rest) = payload.split_at(SALT_LEN); let (nonce_bytes, encrypted) = rest.split_at(NONCE_LEN);
-    let mut salt = [0u8; SALT_LEN]; salt.copy_from_slice(salt_bytes);
-    let mut nonce = [0u8; NONCE_LEN]; nonce.copy_from_slice(nonce_bytes);
+    let mut salt = [0u8; SALT_LEN]; salt.copy_from_slice(salt_bytes); let mut nonce = [0u8; NONCE_LEN]; nonce.copy_from_slice(nonce_bytes);
     let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
     let plain = cipher.decrypt(&XNonce::from(nonce), chacha20poly1305::aead::Payload { msg: encrypted, aad: b"DEOBF-TEXT-V2" }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified text"))?;
     let text = String::from_utf8(plain).map_err(|_| anyhow::anyhow!("decrypted data is not valid UTF-8"))?;
