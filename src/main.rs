@@ -32,32 +32,26 @@ enum Cmd {
 fn password(v: Option<String>, confirm: bool) -> Result<Zeroizing<Vec<u8>>> {
     let interactive = v.is_none();
     let p = match v { Some(x) => x, None => prompt_password("Password: ")? };
-    if confirm && interactive {
-        let q = prompt_password("Confirm password: ")?;
-        if p != q { bail!("passwords do not match"); }
-    }
+    if confirm && interactive { let q = prompt_password("Confirm password: ")?; if p != q { bail!("passwords do not match"); } }
     if p.len() < 12 { bail!("password must contain at least 12 characters"); }
     Ok(Zeroizing::new(p.into_bytes()))
 }
 
 fn derive_key(pass: &[u8], salt: &[u8]) -> Result<[u8; 32]> {
-    let params = Params::new(32 * 1024, 3, 1, Some(32))
-        .map_err(|e| anyhow::anyhow!("invalid Argon2 parameters: {e:?}"))?;
+    let params = Params::new(32 * 1024, 3, 1, Some(32)).map_err(|e| anyhow::anyhow!("invalid Argon2 parameters: {e:?}"))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; 32];
-    argon.hash_password_into(pass, salt, &mut key)
-        .map_err(|e| anyhow::anyhow!("key derivation failed: {e:?}"))?;
+    argon.hash_password_into(pass, salt, &mut key).map_err(|e| anyhow::anyhow!("key derivation failed: {e:?}"))?;
     Ok(key)
 }
 
 fn nonce(base: &[u8; NONCE_LEN], index: u64) -> XNonce {
-    let mut h = Hasher::new();
-    h.update(b"DEOBF-NONCE-V2"); h.update(base); h.update(&index.to_le_bytes());
-    let mut n = [0u8; NONCE_LEN]; n.copy_from_slice(h.finalize().as_bytes()); XNonce::from(n)
+    let mut h = Hasher::new(); h.update(b"DEOBF-NONCE-V2"); h.update(base); h.update(&index.to_le_bytes());
+    let digest = h.finalize();
+    let mut n = [0u8; NONCE_LEN]; n.copy_from_slice(&digest.as_bytes()[..NONCE_LEN]); XNonce::from(n)
 }
 fn aad(index: u64, plain_len: u64, flags: u8) -> Vec<u8> {
-    let mut a = Vec::with_capacity(26); a.extend_from_slice(MAGIC); a.push(VERSION); a.push(flags);
-    a.extend_from_slice(&index.to_le_bytes()); a.extend_from_slice(&plain_len.to_le_bytes()); a
+    let mut a = Vec::with_capacity(26); a.extend_from_slice(MAGIC); a.push(VERSION); a.push(flags); a.extend_from_slice(&index.to_le_bytes()); a.extend_from_slice(&plain_len.to_le_bytes()); a
 }
 
 fn protect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
@@ -70,8 +64,7 @@ fn protect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
     dst.write_all(MAGIC)?; dst.write_all(&[VERSION, 1u8])?; dst.write_all(&salt)?; dst.write_all(&base)?; dst.write_all(&plain_len.to_le_bytes())?;
     let mut buf = vec![0u8; CHUNK]; let mut index = 0u64; let mut digest = Hasher::new(); digest.update(b"DEOBF-CONTENT-V2");
     loop {
-        let n = src.read(&mut buf)?; if n == 0 { break; }
-        digest.update(&buf[..n]);
+        let n = src.read(&mut buf)?; if n == 0 { break; } digest.update(&buf[..n]);
         let compressed = zstd::bulk::compress(&buf[..n], 3).unwrap_or_else(|_| buf[..n].to_vec());
         let encrypted = cipher.encrypt(&nonce(&base, index), chacha20poly1305::aead::Payload { msg: &compressed, aad: &aad(index, plain_len, 1) }).map_err(|_| anyhow::anyhow!("encryption failed"))?;
         dst.write_all(&(n as u32).to_le_bytes())?; dst.write_all(&(encrypted.len() as u32).to_le_bytes())?; dst.write_all(&encrypted)?;
@@ -86,7 +79,7 @@ fn protect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
 fn read_header(src: &mut File) -> Result<(u8, u8, [u8; SALT_LEN], [u8; NONCE_LEN], u64)> {
     let mut magic = [0u8; 8]; src.read_exact(&mut magic)?; if &magic != MAGIC { bail!("not a DEOBF container"); }
     let mut ver = [0u8; 1]; src.read_exact(&mut ver)?; if ver[0] != VERSION && ver[0] != LEGACY_VERSION { bail!("unsupported container version {}", ver[0]); }
-    let mut flags = [0u8; 1]; if ver[0] == VERSION { src.read_exact(&mut flags)?; }
+    let mut flags = [0u8; 1]; src.read_exact(&mut flags)?;
     let mut salt = [0u8; SALT_LEN]; let mut base = [0u8; NONCE_LEN]; let mut len = [0u8; 8]; src.read_exact(&mut salt)?; src.read_exact(&mut base)?; src.read_exact(&mut len)?;
     Ok((ver[0], flags[0], salt, base, u64::from_le_bytes(len)))
 }
