@@ -96,6 +96,7 @@ pub fn kind_name(kind: ArtifactKind) -> &'static str {
         ArtifactKind::Elf => "ELF",
         ArtifactKind::MachO => "Mach-O",
         ArtifactKind::Jar => "JAR",
-        ArtifactKind::Unknown => "Unknown",
+        ArtifactKind::Zip => "ZIP",
+        ArtifactKind::Raw => "Raw",
     }
 }
