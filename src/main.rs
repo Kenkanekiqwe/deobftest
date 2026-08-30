@@ -16,7 +16,6 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 const MAX_PAD: usize = 4096;
-const TEXT_MAGIC: &str = "꧁DEOBF-TEXT-2꧂";
 
 #[derive(Parser)]
 #[command(name = "deobf", version, about = "Hardened custom authenticated file protection")]
@@ -62,13 +61,19 @@ fn aad(index: u64, plain_len: u64, flags: u8) -> Vec<u8> {
     let mut a = Vec::with_capacity(32); a.extend_from_slice(MAGIC); a.push(VERSION); a.push(flags); a.extend_from_slice(&index.to_le_bytes()); a.extend_from_slice(&plain_len.to_le_bytes()); a
 }
 
-const TEXT_ALPHABET: &[u8] = b"!@#$%^&*()-_=+[]{};:,.<>?/|~`";
+// Compact printable symbol encoding: 3 bytes -> 4 characters (~33% expansion).
+const TEXT_ALPHABET: &[u8; 64] = b"!@#$%^&*()-_=+[]{};:,.<>?/|~`abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 fn text_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(TEXT_ALPHABET[(b >> 4) as usize] as char);
-        out.push(TEXT_ALPHABET[(b & 0x0f) as usize] as char);
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0];
+        let b = *chunk.get(1).unwrap_or(&0);
+        let c = *chunk.get(2).unwrap_or(&0);
+        out.push(TEXT_ALPHABET[(a >> 2) as usize] as char);
+        out.push(TEXT_ALPHABET[((a & 3) << 4 | b >> 4) as usize] as char);
+        out.push(if chunk.len() > 1 { TEXT_ALPHABET[((b & 15) << 2 | c >> 6) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TEXT_ALPHABET[(c & 63) as usize] as char } else { '=' });
     }
     out
 }
@@ -77,12 +82,17 @@ fn text_decode(s: &str) -> Result<Vec<u8>> {
     let mut map = [255u8; 256];
     for (i, &c) in TEXT_ALPHABET.iter().enumerate() { map[c as usize] = i as u8; }
     let bytes = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect::<Vec<_>>();
-    if bytes.len() % 2 != 0 { bail!("invalid encrypted text"); }
-    let mut out = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
-        let hi = map[pair[0] as usize]; let lo = map[pair[1] as usize];
-        if hi == 255 || lo == 255 { bail!("invalid encrypted text"); }
-        out.push((hi << 4) | lo);
+    if bytes.len() % 4 != 0 { bail!("invalid encrypted text"); }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for q in bytes.chunks_exact(4) {
+        let a = map[q[0] as usize]; let b = map[q[1] as usize];
+        if a == 255 || b == 255 { bail!("invalid encrypted text"); }
+        let c = if q[2] == b'=' { 0 } else { map[q[2] as usize] };
+        let d = if q[3] == b'=' { 0 } else { map[q[3] as usize] };
+        if c == 255 || d == 255 { bail!("invalid encrypted text"); }
+        out.push((a << 2) | (b >> 4));
+        if q[2] != b'=' { out.push((b << 4) | (c >> 2)); }
+        if q[3] != b'=' { out.push((c << 6) | d); }
     }
     Ok(out)
 }
