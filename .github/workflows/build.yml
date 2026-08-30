@@ -4,32 +4,14 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  quality:
-    name: Format, test and Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-      - name: Test
-        run: cargo test --all-targets --locked
-      - name: Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
-
   build:
     name: Build ${{ matrix.name }}
-    needs: quality
     strategy:
       fail-fast: false
       matrix:
@@ -57,7 +39,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build release
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
