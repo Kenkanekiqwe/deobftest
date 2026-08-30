@@ -1,60 +1,37 @@
 # DEOBF
 
-Custom file-protection container written in Rust for arbitrary binary files, including `.jar`, archives, media, documents and application assets.
+Custom authenticated protection container for owned software and data.
 
-## Security model
+## Protection model
 
-- Argon2id password-based key derivation.
+DEOBF v2 now combines:
+
+- Argon2id password-based key derivation with a per-container random salt.
 - XChaCha20-Poly1305 authenticated encryption.
-- Random 128-bit salt and 192-bit base nonce per protected file.
-- 1 MiB independently authenticated chunks for large files.
-- BLAKE3-derived per-chunk nonces.
-- Authentication fails if the password is wrong or the container was modified.
-- Hidden password input and practical secret zeroization.
-- Temporary files used by `run-jar` are removed after execution.
+- Independent nonces derived for every chunk.
+- Per-chunk authenticated metadata (AAD), preventing chunk reordering or substitution.
+- Zstandard compression before encryption.
+- Random padding between chunks to reduce structural fingerprinting.
+- An authenticated BLAKE3 content digest at the end of the container.
+- Atomic output creation through a temporary file.
+- No original filename, extension, or MIME type stored in the header.
+- Runtime debugger detection for the `run-jar` launcher on supported Windows/Linux targets.
+- Automatic cleanup of the temporary JAR after execution.
+- Backward-compatible reading of DEOBF v1 containers.
 
-## Build
+## Important limitation
 
-```bash
-cargo build --release
+This protects the payload strongly while it is stored or transported. It cannot make executable code mathematically impossible to reverse: if code must execute on a machine controlled by another person, plaintext/code or an equivalent representation can eventually exist in memory.
+
+For Java applications, the next protection layer should be a bytecode obfuscation pass before sealing the JAR. Suitable transformations include identifier renaming, metadata reduction, string encryption, constant indirection, and control-flow transformations, with a configurable keep-list for reflection/serialization APIs.
+
+## CLI
+
+```text
+deobf protect <input> -o <output> --password <password>
+deobf unprotect <input> -o <output> --password <password>
+deobf inspect <input>
+deobf run-jar <input> --password <password> [-- <java args>]
 ```
 
-Windows output: `target/release/deobf.exe`.
-
-## Usage
-
-Protect any file:
-
-```bash
-deobf protect app.jar -o app.jar.deobf
-```
-
-Restore it:
-
-```bash
-deobf unprotect app.jar.deobf -o app.jar
-```
-
-Run a protected JAR through Java without manually restoring it:
-
-```bash
-deobf run-jar app.jar.deobf
-```
-
-Pass JVM/application arguments after `--`:
-
-```bash
-deobf run-jar app.jar.deobf -- --server.port=8080
-```
-
-Inspect metadata without decrypting:
-
-```bash
-deobf inspect app.jar.deobf
-```
-
-## Limitation
-
-Client-side protection cannot make software permanently impossible to reverse-engineer. If a JAR is executed on a user's machine, its bytecode must eventually become available to the JVM. This project provides strong at-rest encryption and tamper detection.
-
-For stronger Java IP protection, add a bytecode-obfuscation stage before encryption: identifier renaming, control-flow transformation, string protection and runtime integrity checks. The resulting JAR can then be wrapped by DEOBF.
+Use a strong password and keep it outside the protected artifact. DEOBF is intended for software you own or are authorized to protect.
