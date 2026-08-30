@@ -256,7 +256,9 @@ fn unprotect_v1(
                     aad: &aad_v1(index, plain_len),
                 },
             )
-            .map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified file"))?;
+            .map_err(|_| {
+                anyhow::anyhow!("authentication failed: wrong password or modified file")
+            })?;
         if plain.len() != n {
             let _ = fs::remove_file(&tmp);
             bail!("invalid decrypted chunk");
