@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ArtifactKind { Unknown, Generic, Jar, Pe, Elf, MachO }
+use super::artifact::ArtifactKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtectionManifest {
@@ -15,7 +14,20 @@ pub struct ProtectionManifest {
 }
 
 impl ProtectionManifest {
-    pub fn new(artifact: ArtifactKind, profile: impl Into<String>, size: u64, hash: impl Into<String>) -> Self {
-        Self { format_version: 3, tool_version: env!("CARGO_PKG_VERSION").into(), artifact, profile: profile.into(), passes: Vec::new(), original_size: size, content_hash: hash.into() }
+    pub fn new(
+        artifact: ArtifactKind,
+        profile: impl Into<String>,
+        size: u64,
+        hash: impl Into<String>,
+    ) -> Self {
+        Self {
+            format_version: 3,
+            tool_version: env!("CARGO_PKG_VERSION").into(),
+            artifact,
+            profile: profile.into(),
+            passes: Vec::new(),
+            original_size: size,
+            content_hash: hash.into(),
+        }
     }
 }
