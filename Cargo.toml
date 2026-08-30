@@ -1,8 +1,8 @@
 [package]
 name = "deobf"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
-description = "Modular software protection and authenticated packaging toolkit"
+description = "Windows software protection and authenticated packaging toolkit"
 license = "MIT"
 
 [dependencies]
@@ -16,6 +16,7 @@ rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 zstd = "0.13"
 zeroize = "1"
+iced = { version = "0.13", default-features = false, features = ["tiny-skia", "fira-sans", "image", "lazy"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_Debug"] }
