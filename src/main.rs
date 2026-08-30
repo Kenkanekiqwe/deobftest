@@ -350,7 +350,7 @@ fn unprotect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
         let mut e = [0u8; 4];
         src.read_exact(&mut e)?;
         let enc_n = u32::from_le_bytes(e) as usize;
-        if n == 0 || n > CHUNK || enc_n < TAG_LEN || enc_n > CHUNK + TAG_LEN {
+        if n == 0 || n > CHUNK || !(TAG_LEN..=CHUNK + TAG_LEN).contains(&enc_n) {
             let _ = fs::remove_file(&tmp);
             bail!("invalid container chunk");
         }
