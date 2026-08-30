@@ -16,8 +16,21 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 const MAX_PAD: usize = 4096;
-const TEXT_ALPHABET: &[u8; 64] =
-    b"!@#$%^&*()-_=+[]{};:,.<>?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
+
+fn text_alphabet() -> [u8; 64] {
+    const SOURCE: &[u8] = b"!@#$%^&*()-_=+[]{};:,.<>?/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut alphabet = [0u8; 64];
+    let mut count = 0usize;
+    for &byte in SOURCE {
+        if !alphabet[..count].contains(&byte) {
+            alphabet[count] = byte;
+            count += 1;
+            if count == 64 { break; }
+        }
+    }
+    debug_assert_eq!(count, 64);
+    alphabet
+}
 
 #[derive(Parser)]
 #[command(name = "deobf", version, about = "Hardened custom authenticated file protection")]
@@ -64,20 +77,22 @@ fn aad(index: u64, plain_len: u64, flags: u8) -> Vec<u8> {
 }
 
 fn text_encode(bytes: &[u8]) -> String {
+    let alphabet = text_alphabet();
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {
         let a = chunk[0]; let b = *chunk.get(1).unwrap_or(&0); let c = *chunk.get(2).unwrap_or(&0);
-        out.push(TEXT_ALPHABET[(a >> 2) as usize] as char);
-        out.push(TEXT_ALPHABET[((a & 3) << 4 | b >> 4) as usize] as char);
-        out.push(if chunk.len() > 1 { TEXT_ALPHABET[((b & 15) << 2 | c >> 6) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TEXT_ALPHABET[(c & 63) as usize] as char } else { '=' });
+        out.push(alphabet[(a >> 2) as usize] as char);
+        out.push(alphabet[((a & 3) << 4 | b >> 4) as usize] as char);
+        out.push(if chunk.len() > 1 { alphabet[((b & 15) << 2 | c >> 6) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { alphabet[(c & 63) as usize] as char } else { '=' });
     }
     out
 }
 
 fn text_decode(s: &str) -> Result<Vec<u8>> {
+    let alphabet = text_alphabet();
     let mut map = [255u8; 256];
-    for (i, &c) in TEXT_ALPHABET.iter().enumerate() { map[c as usize] = i as u8; }
+    for (i, &c) in alphabet.iter().enumerate() { map[c as usize] = i as u8; }
     let bytes = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect::<Vec<_>>();
     if bytes.len() % 4 != 0 { bail!("invalid encrypted text"); }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
