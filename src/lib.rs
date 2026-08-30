@@ -5,6 +5,7 @@ pub use core::{
     analyze_only,
     protect,
     protect_compatible,
+    protect_file,
     unprotect_file,
     verify_compatible,
     Analysis,
