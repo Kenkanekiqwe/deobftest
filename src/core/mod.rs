@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod artifact;
+pub mod compatible;
 pub mod container;
 pub mod engine;
 pub mod formats;
@@ -13,6 +14,7 @@ pub mod validation;
 
 pub use analyzer::{analyze, Analysis, Architecture};
 pub use artifact::{ArtifactInfo, ArtifactKind};
+pub use compatible::{protect_compatible, verify_compatible, CompatibilityManifest};
 pub use container::{pack, unpack, ContainerInfo};
 pub use engine::{analyze_only, kind_name, protect, AnalysisJson, EngineOptions, EngineResult};
 pub use formats::{parse_pe, zip_has_manifest, BinaryFormat, PeInfo};
