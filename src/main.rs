@@ -85,13 +85,15 @@ fn password(v: Option<String>, confirm: bool) -> Result<Zeroizing<Vec<u8>>> {
 }
 
 fn derive_key(pass: &[u8], salt: &[u8]) -> Result<[u8; 32]> {
-    // Memory-hard password derivation. The parameters are deliberately not minimal.
-    let params = Params::new(32 * 1024, 3, 1, Some(32)).context("invalid Argon2 parameters")?;
+    // Argon2 0.5.x Error does not implement std::error::Error,
+    // so anyhow::Context cannot be used directly here.
+    let params = Params::new(32 * 1024, 3, 1, Some(32))
+        .map_err(|e| anyhow::anyhow!("invalid Argon2 parameters: {e:?}"))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; 32];
     argon
         .hash_password_into(pass, salt, &mut key)
-        .context("key derivation failed")?;
+        .map_err(|e| anyhow::anyhow!("key derivation failed: {e:?}"))?;
     Ok(key)
 }
 
@@ -141,10 +143,9 @@ fn protect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
 
     let tmp = output.with_extension("deobf-write-tmp");
     let mut dst = File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
-    // Header intentionally contains no original filename, extension, or MIME type.
     dst.write_all(MAGIC)?;
     dst.write_all(&[VERSION])?;
-    dst.write_all(&[1u8])?; // flags: zstd compression enabled per chunk
+    dst.write_all(&[1u8])?;
     dst.write_all(&salt)?;
     dst.write_all(&base)?;
     dst.write_all(&plain_len.to_le_bytes())?;
@@ -174,7 +175,6 @@ fn protect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
         dst.write_all(&(n as u32).to_le_bytes())?;
         dst.write_all(&(encrypted.len() as u32).to_le_bytes())?;
         dst.write_all(&encrypted)?;
-        // Random padding makes repeated builds/files less structurally identical.
         let mut p = [0u8; 2];
         OsRng.fill_bytes(&mut p);
         let pad = (u16::from_le_bytes(p) as usize) % (MAX_PAD + 1);
@@ -187,7 +187,6 @@ fn protect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
         index += 1;
     }
 
-    // Authenticated trailer binds the complete plaintext to the container.
     let final_hash = digest.finalize();
     let trailer = cipher
         .encrypt(
