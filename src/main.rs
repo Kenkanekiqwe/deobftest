@@ -61,8 +61,8 @@ fn aad(index: u64, plain_len: u64, flags: u8) -> Vec<u8> {
     let mut a = Vec::with_capacity(32); a.extend_from_slice(MAGIC); a.push(VERSION); a.push(flags); a.extend_from_slice(&index.to_le_bytes()); a.extend_from_slice(&plain_len.to_le_bytes()); a
 }
 
-// Compact printable symbol encoding: 3 bytes -> 4 characters (~33% expansion).
-const TEXT_ALPHABET: &[u8; 64] = b"!@#$%^&*()-_=+[]{};:,.<>?/|~`abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+// 64 printable symbols. 3 bytes become 4 symbols (~33% expansion).
+const TEXT_ALPHABET: &[u8; 64] = b"!@#$%^&*()-_=+[]{};:,.<>?abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 fn text_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
