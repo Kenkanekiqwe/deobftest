@@ -4,30 +4,87 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-windows:
-    name: Build Windows x64
-    runs-on: windows-latest
+  quality:
+    name: Format, test and Clippy
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Test
+        run: cargo test --all-targets --locked
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: deobf-windows-x64.exe
+            binary: deobf.exe
+          - name: Linux x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: deobf-linux-x64
+            binary: deobf
+          - name: macOS ARM64
+            os: macos-14
+            target: aarch64-apple-darwin
+            artifact: deobf-macos-arm64
+            binary: deobf
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build release
-        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+        run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
-        shell: pwsh
+        shell: bash
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "target/x86_64-pc-windows-msvc/release/deobf.exe" "dist/deobf-windows-x64.exe"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: deobf-windows-x64.exe
-          path: dist/deobf-windows-x64.exe
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
           if-no-files-found: error
+
+  release:
+    name: Publish release assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        shell: bash
+        run: sha256sum dist/* > dist/SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

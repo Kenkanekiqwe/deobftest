@@ -1,0 +1,21 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Strength { Safe, Balanced, Maximum }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtectionProfile {
+    pub name: String,
+    pub strength: Strength,
+    pub strip_debug: bool,
+    pub protect_strings: bool,
+    pub rename_symbols: bool,
+    pub verify_after_pass: bool,
+    pub integrity: bool,
+}
+
+impl ProtectionProfile {
+    pub fn safe() -> Self { Self { name: "safe".into(), strength: Strength::Safe, strip_debug: false, protect_strings: false, rename_symbols: false, verify_after_pass: true, integrity: true } }
+    pub fn balanced() -> Self { Self { name: "balanced".into(), strength: Strength::Balanced, strip_debug: true, protect_strings: true, rename_symbols: true, verify_after_pass: true, integrity: true } }
+    pub fn maximum() -> Self { Self { name: "maximum".into(), strength: Strength::Maximum, strip_debug: true, protect_strings: true, rename_symbols: true, verify_after_pass: true, integrity: true } }
+}

@@ -1,45 +1,102 @@
 # DEOBF
 
-Custom authenticated protection container for software you own or are authorized to protect.
+DEOBF is a modular software-protection toolkit for software you own or are authorized to protect.
 
-## Current protection
+The project is being rebuilt around a strict separation between **format adapters**, **transformation passes**, **runtime protection**, and the **authenticated container**. It is intentionally not marketed as an impossible-to-reverse-engineer solution: anything that executes on an analyst-controlled machine can ultimately be inspected.
 
-- Argon2id password-based key derivation with per-container random salt.
+## Current engine
+
+The existing container already provides:
+
+- Argon2id password-based key derivation with a per-container random salt.
 - XChaCha20-Poly1305 authenticated encryption.
-- Independent nonces derived for every chunk.
-- Per-chunk authenticated metadata (AAD), preventing chunk reordering/substitution.
-- Streaming/chunked processing for large files.
-- Zstandard support in the dependency set for the compression pipeline.
-- Randomized container material to reduce structural fingerprinting.
-- Atomic output through a temporary file.
+- Per-chunk nonces and authenticated metadata (AAD).
+- Streaming processing for large files.
+- Optional Zstandard compression in the protected payload.
+- Randomized container material.
+- Atomic writes through temporary files.
 - No original filename or extension in the cryptographic header.
-- Temporary JAR cleanup after execution.
-- Backward-compatible v1 reading.
+- Backward-compatible reading of the legacy v1 container.
 
-## Important limitation
+## V3 architecture
 
-No executable can be made mathematically impossible to reverse engineer when it executes on a machine controlled by an analyst. The goal is to raise the cost of extraction and analysis while preserving reliable execution.
+The target architecture is:
 
-## Java/JAR roadmap
+```text
+                 +-------------------+
+                 |       CLI / API   |
+                 +---------+---------+
+                           |
+                 +---------v---------+
+                 | Protection Profile|
+                 +---------+---------+
+                           |
+        +------------------+------------------+
+        |                  |                  |
++-------v------+   +-------v------+   +-------v------+
+| PE / Native  |   | JVM / JAR    |   | Generic data |
+| adapter      |   | adapter      |   | adapter      |
++-------+------+   +-------+------+   +-------+------+
+        |                  |                  |
+        +------------------+------------------+
+                           |
+                 +---------v---------+
+                 | Transformation    |
+                 | pipeline          |
+                 +---------+---------+
+                           |
+                 +---------v---------+
+                 | Verification      |
+                 | + integrity       |
+                 +---------+---------+
+                           |
+                 +---------v---------+
+                 | DEOBF container   |
+                 | AEAD + metadata   |
+                 +-------------------+
+```
 
-The architecture separates the cryptographic container from format-specific transformation. The Java engine is intended to add behavior-preserving passes such as:
+### Protection profiles
 
-1. Symbol/identifier renaming with reflection-aware keep rules.
-2. Debug and unnecessary metadata minimization.
-3. String and constant protection.
-4. Control-flow transformation where semantics can be verified.
-5. Post-transform bytecode verification.
-6. Deterministic build mode for reproducible protected artifacts.
+- **Safe** — minimal transformations, maximum compatibility.
+- **Balanced** — stronger metadata and constant protection with verification.
+- **Maximum** — the strongest behavior-preserving transformations supported by the selected format adapter.
+
+Profiles must be explicit and composable; there will be no hidden global switches that silently change the output format.
+
+### Planned format coverage
+
+1. Generic binary/data files — authenticated container and secure packaging.
+2. Java/JAR — behavior-preserving bytecode transformations, keep rules, metadata minimization and post-transform verification.
+3. Native PE — executable-aware packaging and integrity protection, with transformations limited to code that can be validated safely.
+4. ELF and Mach-O — platform-specific packaging/integrity support after the PE/JVM pipeline is stable.
+
+## What this project will not claim
+
+No legitimate protector can guarantee that protected code is unrecoverable at runtime. The objective is to increase the cost of static analysis, extraction and unauthorized modification while keeping protected software reliable.
+
+The project also avoids features whose primary purpose is stealth, security-product evasion or destructive anti-analysis behavior.
 
 ## CLI
 
 ```text
-deobf protect <input> -o <output> --password <password>
-deobf unprotect <input> -o <output> --password <password>
+deobf protect <input> -o <output>
+deobf unprotect <input> -o <output>
 deobf inspect <input>
-deobf run-jar <input> --password <password> [-- <java args>]
+deobf run-jar <input> [-- <java args>]
+deobf text encrypt <text>
+deobf text decrypt <ciphertext>
 ```
 
-## CI/CD
+Passwords may be supplied interactively; command-line password arguments remain available for automation but are less desirable because process arguments can be observable by other local software.
 
-GitHub Actions checks formatting, compilation, tests and Clippy, then builds release binaries for Windows x64, Linux x64 and macOS arm64. Version tags (`v*`) publish a GitHub Release and SHA-256 checksums automatically.
+## Development
+
+```text
+cargo fmt --all -- --check
+cargo test --all-targets --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo build --release --locked
+```
+
+CI runs formatting, tests, Clippy and release builds for Windows x64, Linux x64 and macOS ARM64. Version tags (`v*`) publish release binaries with SHA-256 checksums.

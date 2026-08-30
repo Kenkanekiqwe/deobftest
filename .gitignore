@@ -1,0 +1,4 @@
+/target/
+*.deobf
+*.deobf-tmp
+*.deobf-write-tmp
