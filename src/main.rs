@@ -27,8 +27,9 @@ enum Cmd {
 }
 
 fn password(v: Option<String>, confirm: bool) -> Result<Zeroizing<Vec<u8>>> {
-    let p = match v { Some(x) => x, None => prompt_password(if confirm { "Password: " } else { "Password: " })? };
-    if confirm && v.is_none() {
+    let interactive = v.is_none();
+    let p = match v { Some(x) => x, None => prompt_password("Password: ")? };
+    if confirm && interactive {
         let q = prompt_password("Confirm password: ")?;
         if p != q { bail!("passwords do not match"); }
     }
@@ -50,13 +51,13 @@ fn nonce(base: &[u8; NONCE_LEN], index: u64) -> XNonce {
 }
 
 fn aad(index: u64, plain_len: u64) -> Vec<u8> {
-    let mut a = Vec::with_capacity(24); a.extend_from_slice(MAGIC); a.push(VERSION); a.extend_from_slice(&index.to_le_bytes()); a.extend_from_slice(&plain_len.to_le_bytes()); a
+    let mut a = Vec::with_capacity(25); a.extend_from_slice(MAGIC); a.push(VERSION); a.extend_from_slice(&index.to_le_bytes()); a.extend_from_slice(&plain_len.to_le_bytes()); a
 }
 
 fn protect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
     if input == output { bail!("input and output must differ"); }
     let mut src = File::open(input).with_context(|| format!("open {}", input.display()))?;
-    let meta = src.metadata()?; let plain_len = meta.len();
+    let plain_len = src.metadata()?.len();
     let mut salt = [0u8; SALT_LEN]; let mut base = [0u8; NONCE_LEN]; OsRng.fill_bytes(&mut salt); OsRng.fill_bytes(&mut base);
     let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
     let mut dst = File::create(output).with_context(|| format!("create {}", output.display()))?;
@@ -80,15 +81,17 @@ fn read_header(src: &mut File) -> Result<([u8; SALT_LEN], [u8; NONCE_LEN], u64)>
 
 fn unprotect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
     if input == output { bail!("input and output must differ"); }
-    let mut src = File::open(input)?; let (salt, base, plain_len) = read_header(&mut src)?; let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
+    let mut src = File::open(input)?; let (salt, base, plain_len) = read_header(&mut src); let (salt, base, plain_len) = (salt?, base?, plain_len?);
+    let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
     let tmp = output.with_extension("deobf-tmp"); let mut dst = File::create(&tmp)?; let mut total = 0u64; let mut index = 0u64;
     loop {
         let mut p = [0u8; 4]; match src.read_exact(&mut p) { Ok(_) => {}, Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break, Err(e) => return Err(e.into()) }
         let n = u32::from_le_bytes(p) as usize; src.read_exact(&mut p)?; let enc_n = u32::from_le_bytes(p) as usize;
-        if n == 0 || n > CHUNK || enc_n != n + 16 { bail!("invalid container chunk"); }
+        if n == 0 || n > CHUNK || enc_n != n + 16 { let _ = fs::remove_file(&tmp); bail!("invalid container chunk"); }
         let mut enc = vec![0u8; enc_n]; src.read_exact(&mut enc)?;
-        let plain = cipher.decrypt(&nonce(&base, index), chacha20poly1305::aead::Payload { msg: &enc, aad: &aad(index, plain_len) }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified file"))?;
-        if plain.len() != n { bail!("invalid decrypted chunk"); } dst.write_all(&plain)?; total += n as u64; index += 1;
+        let plain = match cipher.decrypt(&nonce(&base, index), chacha20poly1305::aead::Payload { msg: &enc, aad: &aad(index, plain_len) }) { Ok(v) => v, Err(_) => { let _ = fs::remove_file(&tmp); bail!("authentication failed: wrong password or modified file"); } };
+        if plain.len() != n { let _ = fs::remove_file(&tmp); bail!("invalid decrypted chunk"); }
+        dst.write_all(&plain)?; total += n as u64; index += 1;
     }
     if total != plain_len { let _ = fs::remove_file(&tmp); bail!("length mismatch: container is damaged"); }
     dst.sync_all()?; drop(dst); fs::rename(tmp, output)?; Ok(())
@@ -100,9 +103,11 @@ fn inspect(input: &Path) -> Result<()> {
 }
 
 fn run_jar(input: &Path, java: &str, pass: &[u8], args: &[String]) -> Result<()> {
-    let dir = tempfile_dir()?; let jar = dir.join("payload.jar"); unprotect(input, &jar, pass)?;
-    let status = Command::new(java).arg("-jar").arg(&jar).args(args).status().with_context(|| format!("failed to start {}", java))?;
-    let _ = fs::remove_dir_all(&dir); if !status.success() { bail!("java exited with {}", status); } Ok(())
+    let dir = tempfile_dir()?; let jar = dir.join("payload.jar");
+    if let Err(e) = unprotect(input, &jar, pass) { let _ = fs::remove_dir_all(&dir); return Err(e); }
+    let status = Command::new(java).arg("-jar").arg(&jar).args(args).status().with_context(|| format!("failed to start {}", java));
+    let _ = fs::remove_dir_all(&dir); let status = status?;
+    if !status.success() { bail!("java exited with {}", status); } Ok(())
 }
 
 fn tempfile_dir() -> Result<PathBuf> {
