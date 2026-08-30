@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArtifactKind {
     Pe,
     Elf,
@@ -58,14 +59,18 @@ pub fn detect(data: &[u8]) -> ArtifactKind {
 
     if data.len() >= 4 {
         let magic = &data[..4];
-        if matches!(magic, b"\xfe\xed\xfa\xce" | b"\xce\xfa\xed\xfe" | b"\xfe\xed\xfa\xcf" | b"\xcf\xfa\xed\xfe") {
+        if matches!(
+            magic,
+            b"\xfe\xed\xfa\xce"
+                | b"\xce\xfa\xed\xfe"
+                | b"\xfe\xed\xfa\xcf"
+                | b"\xcf\xfa\xed\xfe"
+        ) {
             return ArtifactKind::MachO;
         }
     }
 
     if data.len() >= 4 && &data[..4] == b"PK\x03\x04" {
-        // A JAR is a ZIP container. We deliberately classify it as ZIP here;
-        // callers that need Java-specific handling can inspect the ZIP entries.
         return ArtifactKind::Zip;
     }
 
