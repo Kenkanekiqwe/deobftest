@@ -16,11 +16,7 @@ pub struct EngineOptions {
 
 impl Default for EngineOptions {
     fn default() -> Self {
-        Self {
-            profile: "balanced".into(),
-            verify: true,
-            add_integrity: true,
-        }
+        Self { profile: "balanced".into(), verify: true, add_integrity: true }
     }
 }
 
@@ -76,9 +72,11 @@ pub fn analyze_only(data: &[u8]) -> Result<AnalysisJson> {
     Ok(analyze(data)?.into())
 }
 
-/// Runs only format-safe transformations. The artifact bytes remain unchanged
-/// by the generic engine so PE/JAR/ZIP/etc. stay directly usable. Real binary
-/// transformation belongs in a format-aware backend with its own verifier.
+/// Builds the payload that is subsequently stored in the authenticated DEOBF
+/// container. The generic engine intentionally does not rewrite executable or
+/// archive formats: format-specific transformations belong in dedicated,
+/// verifier-backed backends. The actual confidentiality boundary is the
+/// encrypted container implemented by the CLI.
 pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, EngineResult)> {
     let started = Instant::now();
     if data.is_empty() {
@@ -87,8 +85,9 @@ pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, Engin
 
     let analysis = analyze(&data).context("artifact analysis failed")?;
     let selected = profile(&options.profile);
-    let mut pipeline = Pipeline::new().add(SizeInvariant);
+    selected.validate().context("invalid protection profile")?;
 
+    let mut pipeline = Pipeline::new().add(SizeInvariant);
     if options.add_integrity {
         pipeline = pipeline.add(IntegrityGuard);
     }
@@ -96,16 +95,10 @@ pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, Engin
         pipeline = pipeline.add(super::pipeline::VerifyPass);
     }
 
-    let passes = pipeline
-        .names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let passes = pipeline.names().into_iter().map(str::to_owned).collect();
     let input_size = data.len() as u64;
     let input_hash = digest(&data);
-    let output = pipeline
-        .run(data, &selected)
-        .context("protection pipeline failed")?;
+    let output = pipeline.run(data, &selected).context("protection pipeline failed")?;
     let output_size = output.len() as u64;
     let output_hash = digest(&output);
 
@@ -119,7 +112,7 @@ pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, Engin
             input_hash,
             output_hash,
             passes,
-            compatibility_mode: true,
+            compatibility_mode: false,
             format_preserved: true,
         },
     ))
