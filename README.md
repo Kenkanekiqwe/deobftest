@@ -1,29 +1,35 @@
 # DEOBF
 
-Custom authenticated protection container for owned software and data.
+Custom authenticated protection container for software you own or are authorized to protect.
 
-## Protection model
+## Current protection
 
-DEOBF v2 now combines:
-
-- Argon2id password-based key derivation with a per-container random salt.
+- Argon2id password-based key derivation with per-container random salt.
 - XChaCha20-Poly1305 authenticated encryption.
 - Independent nonces derived for every chunk.
-- Per-chunk authenticated metadata (AAD), preventing chunk reordering or substitution.
-- Zstandard compression before encryption.
-- Random padding between chunks to reduce structural fingerprinting.
-- An authenticated BLAKE3 content digest at the end of the container.
-- Atomic output creation through a temporary file.
-- No original filename, extension, or MIME type stored in the header.
-- Runtime debugger detection for the `run-jar` launcher on supported Windows/Linux targets.
-- Automatic cleanup of the temporary JAR after execution.
-- Backward-compatible reading of DEOBF v1 containers.
+- Per-chunk authenticated metadata (AAD), preventing chunk reordering/substitution.
+- Streaming/chunked processing for large files.
+- Zstandard support in the dependency set for the compression pipeline.
+- Randomized container material to reduce structural fingerprinting.
+- Atomic output through a temporary file.
+- No original filename or extension in the cryptographic header.
+- Temporary JAR cleanup after execution.
+- Backward-compatible v1 reading.
 
 ## Important limitation
 
-This protects the payload strongly while it is stored or transported. It cannot make executable code mathematically impossible to reverse: if code must execute on a machine controlled by another person, plaintext/code or an equivalent representation can eventually exist in memory.
+No executable can be made mathematically impossible to reverse engineer when it executes on a machine controlled by an analyst. The goal is to raise the cost of extraction and analysis while preserving reliable execution.
 
-For Java applications, the next protection layer should be a bytecode obfuscation pass before sealing the JAR. Suitable transformations include identifier renaming, metadata reduction, string encryption, constant indirection, and control-flow transformations, with a configurable keep-list for reflection/serialization APIs.
+## Java/JAR roadmap
+
+The architecture separates the cryptographic container from format-specific transformation. The Java engine is intended to add behavior-preserving passes such as:
+
+1. Symbol/identifier renaming with reflection-aware keep rules.
+2. Debug and unnecessary metadata minimization.
+3. String and constant protection.
+4. Control-flow transformation where semantics can be verified.
+5. Post-transform bytecode verification.
+6. Deterministic build mode for reproducible protected artifacts.
 
 ## CLI
 
@@ -34,4 +40,6 @@ deobf inspect <input>
 deobf run-jar <input> --password <password> [-- <java args>]
 ```
 
-Use a strong password and keep it outside the protected artifact. DEOBF is intended for software you own or are authorized to protect.
+## CI/CD
+
+GitHub Actions checks formatting, compilation, tests and Clippy, then builds release binaries for Windows x64, Linux x64 and macOS arm64. Version tags (`v*`) publish a GitHub Release and SHA-256 checksums automatically.
