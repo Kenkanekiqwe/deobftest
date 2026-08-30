@@ -12,13 +12,29 @@ fn binary_roundtrip() {
     fs::write(&input, &data).unwrap();
 
     let status = Command::new(exe)
-        .args(["protect", input.to_str().unwrap(), "-o", protected.to_str().unwrap(), "--password", "correct horse battery staple"])
-        .status().unwrap();
+        .args([
+            "protect",
+            input.to_str().unwrap(),
+            "-o",
+            protected.to_str().unwrap(),
+            "--password",
+            "correct horse battery staple",
+        ])
+        .status()
+        .unwrap();
     assert!(status.success());
 
     let status = Command::new(exe)
-        .args(["unprotect", protected.to_str().unwrap(), "-o", output.to_str().unwrap(), "--password", "correct horse battery staple"])
-        .status().unwrap();
+        .args([
+            "unprotect",
+            protected.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--password",
+            "correct horse battery staple",
+        ])
+        .status()
+        .unwrap();
     assert!(status.success());
     assert_eq!(fs::read(output).unwrap(), data);
 }
