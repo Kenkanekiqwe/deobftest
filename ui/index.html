@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DEOBF — Protection Studio</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><span class="mark">D</span><div><b>DEOBF</b><small>Protection Studio</small></div></div>
+    <nav>
+      <button class="nav active" data-page="protect">Защита</button>
+      <button class="nav" data-page="analyze">Анализ</button>
+      <button class="nav" data-page="profiles">Профили</button>
+      <button class="nav" data-page="settings">Настройки</button>
+    </nav>
+    <div class="status"><span></span> Engine ready<br><small>DEOBF v3</small></div>
+  </aside>
+
+  <main>
+    <header><div><h1 id="title">Защита файла</h1><p id="subtitle">Настройте защиту и запустите обработку.</p></div><button class="ghost" id="theme">◐</button></header>
+
+    <section class="page active" id="protect">
+      <div class="drop" id="drop"><div class="upload">↑</div><h2>Перетащите файл сюда</h2><p>или выберите файл с компьютера</p><input id="file" type="file" hidden><button class="primary" id="choose">Выбрать файл</button><div class="file" id="selected">Файл не выбран</div></div>
+      <div class="grid">
+        <div class="card"><h3>Профиль защиты</h3><select id="profile"><option value="safe">Safe — минимальное влияние</option><option value="balanced" selected>Balanced — рекомендуется</option><option value="maximum">Maximum — усиленная защита</option></select><p class="hint">Профиль определяет набор проверок и преобразований.</p></div>
+        <div class="card"><h3>Параметры</h3><label><input type="checkbox" checked> Проверка целостности</label><label><input type="checkbox" checked> Валидация результата</label><label><input type="checkbox"> Сохранять диагностический отчёт</label></div>
+      </div>
+      <button class="protect" id="protectBtn" disabled>Защитить файл</button>
+      <div class="progress" id="progress"><div></div></div><div class="log" id="log"></div>
+    </section>
+
+    <section class="page" id="analyze"><div class="card"><h2>Анализ артефакта</h2><p>Здесь будет отображаться формат, архитектура, секции, metadata и предупреждения после выбора файла.</p><button class="primary" id="analyzeBtn">Выбрать файл для анализа</button><input id="analyzeFile" type="file" hidden><pre id="analysis">Ожидание файла…</pre></div></section>
+    <section class="page" id="profiles"><div class="grid"><div class="card"><h3>Safe</h3><p>Консервативная обработка с приоритетом совместимости.</p></div><div class="card"><h3>Balanced</h3><p>Баланс защиты, размера и производительности.</p></div><div class="card"><h3>Maximum</h3><p>Максимально строгая политика доступных проверок.</p></div></div></section>
+    <section class="page" id="settings"><div class="card"><h2>Настройки</h2><label>Максимальный размер входа <input value="4 GiB" disabled></label><label>Размер chunk <input value="1 MiB" disabled></label><p class="hint">Ограничения применяются движком до ресурсоёмких операций.</p></div></section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
