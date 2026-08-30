@@ -16,6 +16,7 @@ pub use artifact::{ArtifactInfo, ArtifactKind};
 pub use container::{pack, unpack, ContainerInfo};
 pub use engine::{analyze_only, kind_name, protect, AnalysisJson, EngineOptions, EngineResult};
 pub use formats::{parse_pe, zip_has_manifest, BinaryFormat, PeInfo};
+pub use limits::ResourceLimits;
 pub use manifest::ProtectionManifest;
 pub use passes::{IntegrityGuard, SizeInvariant};
 pub use pipeline::{Pass, Pipeline};
