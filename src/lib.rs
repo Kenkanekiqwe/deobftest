@@ -5,6 +5,7 @@ pub use core::{
     analyze_only,
     protect,
     protect_compatible,
+    unprotect_file,
     verify_compatible,
     Analysis,
     AnalysisJson,
@@ -18,6 +19,7 @@ pub use core::{
     Pass,
     Pipeline,
     ProtectionManifest,
+    ProtectionProfile,
     ResourceLimits,
     Strength,
 };
