@@ -1,6 +1,6 @@
 pub mod core;
 
-pub use core::{
+pub use crate::core::{
     analyze,
     analyze_only,
     protect,
