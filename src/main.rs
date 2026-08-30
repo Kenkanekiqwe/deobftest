@@ -91,7 +91,7 @@ fn text_encrypt(text: Option<String>, pass: &[u8]) -> Result<()> {
     let input = match text { Some(v) => v, None => { print!("✦ Text: "); std::io::stdout().flush()?; let mut v = String::new(); std::io::stdin().read_line(&mut v)?; v.trim_end_matches(['\r', '\n']).to_owned() } };
     let mut salt = [0u8; SALT_LEN]; let mut base = [0u8; NONCE_LEN]; OsRng.fill_bytes(&mut salt); OsRng.fill_bytes(&mut base);
     let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
-    let encrypted = cipher.encrypt(XNonce::from(base), chacha20poly1305::aead::Payload { msg: input.as_bytes(), aad: b"DEOBF-TEXT-V2" }).map_err(|_| anyhow::anyhow!("text encryption failed"))?;
+    let encrypted = cipher.encrypt(&XNonce::from(base), chacha20poly1305::aead::Payload { msg: input.as_bytes(), aad: b"DEOBF-TEXT-V2" }).map_err(|_| anyhow::anyhow!("text encryption failed"))?;
     let mut payload = Vec::with_capacity(SALT_LEN + NONCE_LEN + encrypted.len());
     payload.extend_from_slice(&salt); payload.extend_from_slice(&base); payload.extend_from_slice(&encrypted);
     println!("{}", text_encode(&payload));
@@ -106,7 +106,7 @@ fn text_decrypt(text: Option<String>, pass: &[u8]) -> Result<()> {
     let mut salt = [0u8; SALT_LEN]; salt.copy_from_slice(salt_bytes);
     let mut nonce = [0u8; NONCE_LEN]; nonce.copy_from_slice(nonce_bytes);
     let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
-    let plain = cipher.decrypt(XNonce::from(nonce), chacha20poly1305::aead::Payload { msg: encrypted, aad: b"DEOBF-TEXT-V2" }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified text"))?;
+    let plain = cipher.decrypt(&XNonce::from(nonce), chacha20poly1305::aead::Payload { msg: encrypted, aad: b"DEOBF-TEXT-V2" }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified text"))?;
     let text = String::from_utf8(plain).map_err(|_| anyhow::anyhow!("decrypted data is not valid UTF-8"))?;
     println!("{}", text); Ok(())
 }
