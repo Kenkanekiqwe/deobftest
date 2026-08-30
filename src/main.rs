@@ -81,7 +81,7 @@ fn read_header(src: &mut File) -> Result<([u8; SALT_LEN], [u8; NONCE_LEN], u64)>
 
 fn unprotect(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
     if input == output { bail!("input and output must differ"); }
-    let mut src = File::open(input)?; let (salt, base, plain_len) = read_header(&mut src); let (salt, base, plain_len) = (salt?, base?, plain_len?);
+    let mut src = File::open(input)?; let (salt, base, plain_len) = read_header(&mut src)?;
     let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
     let tmp = output.with_extension("deobf-tmp"); let mut dst = File::create(&tmp)?; let mut total = 0u64; let mut index = 0u64;
     loop {
