@@ -11,7 +11,7 @@ fn binary_roundtrip() {
     let data: Vec<u8> = (0..=255).cycle().take(3 * 1024 * 1024 + 123).collect();
     fs::write(&input, &data).unwrap();
 
-    let status = Command::new(exe)
+    let result = Command::new(exe)
         .args([
             "protect",
             input.to_str().unwrap(),
@@ -20,11 +20,17 @@ fn binary_roundtrip() {
             "--password",
             "correct horse battery staple",
         ])
-        .status()
+        .output()
         .unwrap();
-    assert!(status.success());
+    assert!(
+        result.status.success(),
+        "protect failed: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        result.status,
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
 
-    let status = Command::new(exe)
+    let result = Command::new(exe)
         .args([
             "unprotect",
             protected.to_str().unwrap(),
@@ -33,8 +39,14 @@ fn binary_roundtrip() {
             "--password",
             "correct horse battery staple",
         ])
-        .status()
+        .output()
         .unwrap();
-    assert!(status.success());
+    assert!(
+        result.status.success(),
+        "unprotect failed: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        result.status,
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(fs::read(output).unwrap(), data);
 }
