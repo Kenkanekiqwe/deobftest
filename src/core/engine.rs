@@ -3,8 +3,9 @@ use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
+use super::artifact::ArtifactKind;
 use super::pipeline::Pipeline;
-use super::{analyze, Analysis, ArtifactKind, IntegrityGuard, ProtectionProfile, SizeInvariant};
+use super::{analyze, Analysis, IntegrityGuard, ProtectionProfile, SizeInvariant};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineOptions {
