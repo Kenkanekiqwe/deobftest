@@ -18,16 +18,23 @@ jobs:
   build:
     name: Build Windows x64
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Build release only
-        run: cargo build --release --locked --target x86_64-pc-windows-msvc --bin deobf --bin deobf-gui
+          cache-targets: true
+          cache-all-crates: true
+
+      - name: Build release binaries
+        run: cargo build --release --target x86_64-pc-windows-msvc --bin deobf --bin deobf-gui
+
       - name: Package
         shell: pwsh
         run: |
@@ -35,6 +42,10 @@ jobs:
           Copy-Item "target/x86_64-pc-windows-msvc/release/deobf.exe" "dist/deobf.exe"
           Copy-Item "target/x86_64-pc-windows-msvc/release/deobf-gui.exe" "dist/deobf-gui.exe"
           Compress-Archive -Path "dist/deobf.exe", "dist/deobf-gui.exe" -DestinationPath "dist/deobf-windows-x64.zip" -Force
+          Get-FileHash "dist/deobf.exe", "dist/deobf-gui.exe", "dist/deobf-windows-x64.zip" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } |
+            Set-Content "dist/SHA256SUMS.txt"
+
       - uses: actions/upload-artifact@v4
         with:
           name: deobf-windows-x64
@@ -53,12 +64,6 @@ jobs:
         with:
           name: deobf-windows-x64
           path: dist
-      - name: Checksums
-        shell: pwsh
-        run: |
-          Get-ChildItem dist -File | ForEach-Object {
-            (Get-FileHash $_.FullName -Algorithm SHA256).Hash + "  " + $_.Name
-          } | Out-File "dist/SHA256SUMS.txt"
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
