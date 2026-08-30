@@ -8,6 +8,7 @@ pub mod manifest;
 pub mod passes;
 pub mod pipeline;
 pub mod profile;
+pub mod report;
 pub mod validation;
 
 pub use analyzer::{analyze, Analysis, Architecture};
@@ -19,4 +20,5 @@ pub use manifest::{ArtifactKind, ProtectionManifest};
 pub use passes::{IntegrityGuard, SizeInvariant};
 pub use pipeline::{Pass, Pipeline};
 pub use profile::{ProtectionProfile, Strength};
+pub use report::AnalysisReport;
 pub use validation::{validate, ValidationReport};
