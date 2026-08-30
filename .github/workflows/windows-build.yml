@@ -16,7 +16,7 @@ jobs:
         with:
           toolchain: stable-x86_64-pc-windows-msvc
       - name: Build release
-        run: cargo build --release --locked
+        run: cargo build --release
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
