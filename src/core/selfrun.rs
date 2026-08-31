@@ -21,7 +21,6 @@ const BOOT_CLASS: &[u8] = include_bytes!("../../vendor/java/deobf/Boot.class");
 const FORGE_SERVICE_CLASS: &[u8] = include_bytes!("../../vendor/java/deobf/ForgeService.class");
 const BUKKIT_PLUGIN_CLASS: &[u8] = include_bytes!("../../vendor/java/deobf/BukkitPlugin.class");
 const PYTHON_TEMPLATE: &str = include_str!("../../vendor/python/loader_template.py");
-const MAX_NESTED_JAR_DEPTH: u32 = 8;
 
 pub fn encrypt_wrapper(key: &[u8; AUTO_KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
     let mut nonce = [0u8; 24];
@@ -119,17 +118,6 @@ pub fn looks_like_zipapp(data: &[u8]) -> bool {
 }
 
 pub fn wrap_jar(payload: &[u8], key: &[u8; AUTO_KEY_LEN]) -> Result<Vec<u8>> {
-    wrap_jar_inner(payload, key, 0)
-}
-
-fn wrap_jar_inner(
-    payload: &[u8],
-    key: &[u8; AUTO_KEY_LEN],
-    depth: u32,
-) -> Result<Vec<u8>> {
-    if depth > MAX_NESTED_JAR_DEPTH {
-        bail!("nested JAR depth exceeded");
-    }
     let envelope = encrypt_wrapper(key, payload)?;
     let files = read_zip_files(payload)?;
     let original_main = jar_main_class(payload).unwrap_or_default();
@@ -176,14 +164,10 @@ fn wrap_jar_inner(
             continue;
         }
 
-        if lower.ends_with(".jar") {
-            if depth < MAX_NESTED_JAR_DEPTH {
-                let mut nested_key = [0u8; AUTO_KEY_LEN];
-                OsRng.fill_bytes(&mut nested_key);
-                if let Ok(wrapped) = wrap_jar_inner(&data, &nested_key, depth + 1) {
-                    push_entry(&mut out_entries, &mut seen, &norm, wrapped);
-                }
-            }
+        if is_nested_jar_entry(&lower) {
+            // Nested libraries (Fabric JiJ etc.) must stay unmodified valid ZIPs.
+            // Wrapping them injects deobf.Boot and Fabric binds preLaunch to the library mod id.
+            push_entry(&mut out_entries, &mut seen, &norm, data);
             continue;
         }
 
@@ -276,9 +260,7 @@ fn wrap_jar_inner(
     if !plugin_main.is_empty() {
         meta.push_str(&format!("original-plugin-main={plugin_main}\n"));
     }
-    if depth == 0 {
-        meta.push_str("full-original=true\n");
-    }
+    meta.push_str("full-original=true\n");
     push_entry(
         &mut out_entries,
         &mut seen,
@@ -304,6 +286,23 @@ fn file_name_lower(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase()
 }
 
+fn is_nested_jar_entry(lower: &str) -> bool {
+    if lower.ends_with(".jar") {
+        return true;
+    }
+    if !lower.ends_with(".zip") {
+        return false;
+    }
+    lower.contains("/jars/")
+        || lower.contains("/jarjar/")
+        || lower.contains("/libraries/")
+        || lower.starts_with("jars/")
+        || lower.starts_with("libraries/")
+        || lower.starts_with("meta-inf/jars/")
+        || lower.starts_with("meta-inf/jarjar/")
+        || lower.starts_with("meta-inf/libraries/")
+}
+
 fn should_skip_passthrough(name: &str) -> bool {
     let lower = name.replace('\\', "/").to_ascii_lowercase();
     if lower.starts_with("deobf/") {
@@ -321,8 +320,9 @@ fn should_skip_passthrough(name: &str) -> bool {
     {
         return true;
     }
-    if lower.ends_with(".class")
-        || lower.ends_with(".java")
+    // Mixin PREPARE runs when Knot loads deobf.Boot, before preLaunch decrypts
+    // payload.bin. .class files must remain real ZIP entries.
+    if lower.ends_with(".java")
         || lower.ends_with(".kt")
         || lower.ends_with(".kts")
         || lower.ends_with(".scala")

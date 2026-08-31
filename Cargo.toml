@@ -1,6 +1,6 @@
 [package]
 name = "deobf"
-version = "0.7.3"
+version = "0.7.4"
 edition = "2021"
 description = "Windows software protection and authenticated runtime packaging toolkit"
 license = "MIT"
