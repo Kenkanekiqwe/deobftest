@@ -3,9 +3,11 @@ pub mod core;
 pub use crate::core::{
     analyze,
     analyze_only,
+    default_runtime_output,
     protect,
     protect_compatible,
     protect_file,
+    run_protected,
     unprotect_file,
     verify_compatible,
     Analysis,
@@ -22,5 +24,6 @@ pub use crate::core::{
     ProtectionManifest,
     ProtectionProfile,
     ResourceLimits,
+    RuntimeKind,
     Strength,
 };
