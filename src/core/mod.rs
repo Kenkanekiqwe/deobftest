@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod artifact;
+pub mod backends;
 pub mod compatible;
 pub mod container;
 pub mod engine;
@@ -15,12 +16,10 @@ pub mod validation;
 
 pub use analyzer::{analyze, Analysis, Architecture};
 pub use artifact::{ArtifactInfo, ArtifactKind};
+pub use backends::{backend_for, protect_with_backend, BackendKind, BackendReport, ProtectionBackend};
 pub use compatible::{protect_compatible, verify_compatible, CompatibilityManifest};
 pub use container::{pack, unpack, ContainerInfo};
-pub use engine::{
-    analyze_only, kind_name, protect, protect_file, unprotect_file, AnalysisJson, EngineOptions,
-    EngineResult,
-};
+pub use engine::{analyze_only, kind_name, protect, protect_file, unprotect_file, AnalysisJson, EngineOptions, EngineResult};
 pub use formats::{parse_pe, zip_has_manifest, BinaryFormat, PeInfo};
 pub use limits::ResourceLimits;
 pub use manifest::ProtectionManifest;
