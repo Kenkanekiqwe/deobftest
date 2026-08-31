@@ -173,8 +173,17 @@ pub fn wrap_stub(
     Ok(out)
 }
 
-/// Locate a PE image that contains `run_embedded_stub` (CLI, GUI, or dedicated stub).
+/// Locate a PE image that contains `run_embedded_stub`.
+/// Prefer the compile-time embedded tiny stub so Protect never wraps the iced GUI exe.
 pub fn load_stub_image() -> Result<Vec<u8>> {
+    #[cfg(deobf_embedded_stub)]
+    {
+        const EMBEDDED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/deobf-stub.bin"));
+        if EMBEDDED.len() >= 2 && EMBEDDED.starts_with(b"MZ") {
+            return Ok(stub_prefix(EMBEDDED).to_vec());
+        }
+    }
+
     if let Ok(path) = env::var("DEOBF_STUB_PATH") {
         let bytes = fs::read(&path).with_context(|| format!("read DEOBF_STUB_PATH {path}"))?;
         return Ok(stub_prefix(&bytes).to_vec());
@@ -182,12 +191,24 @@ pub fn load_stub_image() -> Result<Vec<u8>> {
     let exe = env::current_exe().context("resolve current executable")?;
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(dir) = exe.parent() {
-        for name in ["deobf-stub.exe", "deobf-stub", "deobf.exe", "deobf"] {
+        for name in ["deobf-stub.exe", "deobf-stub"] {
             candidates.push(dir.join(name));
         }
         if let Some(parent) = dir.parent() {
-            for name in ["deobf-stub.exe", "deobf-stub", "deobf.exe", "deobf"] {
+            for name in ["deobf-stub.exe", "deobf-stub"] {
                 candidates.push(parent.join(name));
+            }
+        }
+        // Sibling deobf.exe only when no embedded stub (avoid wrapping the iced GUI image).
+        #[cfg(not(deobf_embedded_stub))]
+        {
+            for name in ["deobf.exe", "deobf"] {
+                candidates.push(dir.join(name));
+            }
+            if let Some(parent) = dir.parent() {
+                for name in ["deobf.exe", "deobf"] {
+                    candidates.push(parent.join(name));
+                }
             }
         }
     }
@@ -201,15 +222,18 @@ pub fn load_stub_image() -> Result<Vec<u8>> {
             }
         }
     }
-    let stem = exe.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    if matches!(stem, "deobf" | "deobf-gui" | "deobf-stub") {
-        let bytes = fs::read(&exe).with_context(|| format!("read {}", exe.display()))?;
-        if bytes.len() >= 2 && bytes.starts_with(b"MZ") {
-            return Ok(stub_prefix(&bytes).to_vec());
+    #[cfg(not(deobf_embedded_stub))]
+    {
+        let stem = exe.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if matches!(stem, "deobf" | "deobf-gui" | "deobf-stub") {
+            let bytes = fs::read(&exe).with_context(|| format!("read {}", exe.display()))?;
+            if bytes.len() >= 2 && bytes.starts_with(b"MZ") {
+                return Ok(stub_prefix(&bytes).to_vec());
+            }
         }
     }
     bail!(
-        "Windows runtime stub not found (looked for deobf-stub/deobf next to {}, or DEOBF_STUB_PATH)",
+        "Windows runtime stub not found (looked for embedded stub, deobf-stub next to {}, or DEOBF_STUB_PATH)",
         exe.display()
     )
 }

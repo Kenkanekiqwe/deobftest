@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
+
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use rpassword::prompt_password;
@@ -10,6 +12,9 @@ use deobf::{
     run_protected, unprotect_file, EngineOptions, RuntimeKind,
 };
 
+#[cfg(feature = "gui")]
+mod gui;
+
 #[derive(Parser)]
 #[command(
     name = "deobf",
@@ -18,7 +23,7 @@ use deobf::{
 )]
 struct Cli {
     #[command(subcommand)]
-    command: CommandKind,
+    command: Option<CommandKind>,
 }
 
 #[derive(Subcommand)]
@@ -113,6 +118,59 @@ fn package_password(input: &std::path::Path, value: Option<String>) -> Result<Ze
     password(None, false)
 }
 
+#[cfg(all(windows, feature = "gui"))]
+fn attach_parent_console() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{
+        AllocConsole, AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS,
+        STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    fn missing(id: u32) -> bool {
+        unsafe {
+            let handle = GetStdHandle(id);
+            handle.is_null() || handle == (-1isize as _)
+        }
+    }
+
+    // Keep pipes from `deobf protect ... | ...` and cargo tests; only attach when
+    // the GUI subsystem left stdin/stdout disconnected (cmd.exe double-click / no-redir).
+    if !missing(STD_OUTPUT_HANDLE) && !missing(STD_ERROR_HANDLE) {
+        return;
+    }
+
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            let _ = AllocConsole();
+        }
+    }
+
+    let bind = |name: &str, id: u32| {
+        if !missing(id) {
+            return;
+        }
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(name)
+        {
+            unsafe {
+                SetStdHandle(id, file.as_raw_handle() as _);
+            }
+            std::mem::forget(file);
+        }
+    };
+    bind("CONIN$", STD_INPUT_HANDLE);
+    bind("CONOUT$", STD_OUTPUT_HANDLE);
+    bind("CONOUT$", STD_ERROR_HANDLE);
+}
+
+#[cfg(feature = "gui")]
+fn launch_gui() -> Result<ExitCode> {
+    gui::run().map_err(|err| anyhow::anyhow!("{err}"))?;
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> Result<ExitCode> {
     if let Some(result) = run_embedded_stub() {
         return match result {
@@ -121,8 +179,32 @@ fn main() -> Result<ExitCode> {
         };
     }
 
+    #[cfg(feature = "gui")]
+    if std::env::args_os().len() <= 1 {
+        return launch_gui();
+    }
+
+    #[cfg(all(windows, feature = "gui"))]
+    attach_parent_console();
+
     let cli = Cli::parse();
-    match cli.command {
+    let command = match cli.command {
+        Some(command) => command,
+        None => {
+            #[cfg(feature = "gui")]
+            {
+                return launch_gui();
+            }
+            #[cfg(not(feature = "gui"))]
+            {
+                use clap::CommandFactory;
+                Cli::command().print_help()?;
+                println!();
+                return Ok(ExitCode::from(2));
+            }
+        }
+    };
+    match command {
         CommandKind::Protect {
             input,
             output,

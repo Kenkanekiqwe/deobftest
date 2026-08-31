@@ -1,8 +1,6 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
-
 use deobf::{
-    analyze_only, default_protected_output, protect_file, run_embedded_stub, run_protected,
-    unprotect_file, EngineOptions, RuntimeKind,
+    analyze_only, default_protected_output, protect_file, run_protected, unprotect_file,
+    EngineOptions, RuntimeKind,
 };
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, scrollable, text, text_input, Space,
@@ -11,17 +9,7 @@ use iced::{Alignment, Background, Border, Color, Element, Length, Task, Theme};
 use rfd::FileDialog;
 use std::path::PathBuf;
 
-fn main() -> iced::Result {
-    if let Some(result) = run_embedded_stub() {
-        match result {
-            Ok(code) => std::process::exit(code),
-            Err(err) => {
-                eprintln!("DEOBF runtime: {err:#}");
-                std::process::exit(1);
-            }
-        }
-    }
-
+pub fn run() -> iced::Result {
     iced::application("DEOBF — Protection Studio", App::update, App::view)
         .theme(|_| deobf_theme())
         .window_size(iced::Size::new(1280.0, 840.0))

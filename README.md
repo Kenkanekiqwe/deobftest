@@ -81,7 +81,9 @@ No legitimate protector can guarantee that protected code is unrecoverable at ru
 
 The project also avoids features whose primary purpose is stealth, security-product evasion or destructive anti-analysis behavior.
 
-## CLI
+## App
+
+Download **`deobf.exe`** (one Windows application). Double-click it to open the Protection Studio GUI. From a terminal, the same binary is the CLI:
 
 ```text
 deobf protect <input> [-o <output>]
@@ -89,6 +91,8 @@ deobf unprotect <input> -o <output>
 deobf inspect <input>
 deobf run <package> <pe|jar|python>
 ```
+
+No separate `deobf-gui.exe` or `deobf-stub.exe` is shipped. The PE runtime stub used when protecting EXEs is compiled in at build time, so Protect does not need a sibling stub next to the app.
 
 `deobf protect input.exe` (no `-p` / `--password`) is the default: it writes `protected/input.exe` with an embedded auto-key. Double-click the output and it decrypts via the existing AEAD runtime, launches the original, then cleans up. `deobf protect app.jar` writes a self-running `protected/app.jar` (`java -jar`). `deobf protect app.py` writes a self-running `protected/app.py` (`python` / `py`). Optional `--password` extra-lock for JAR/Python still uses the authenticated container and `deobf run`.
 
@@ -98,9 +102,9 @@ deobf run <package> <pe|jar|python>
 
 ```text
 cargo fmt --all -- --check
-cargo test --all-targets --locked
+cargo test --no-default-features --locked
+cargo check --features gui --bin deobf
 cargo clippy --all-targets --locked -- -D warnings
-cargo build --release --locked
 ```
 
-GitHub Actions on ordinary `main` pushes builds `deobf` and `deobf-stub` only (`--no-default-features`) with rust-cache + sccache and a faster CI release profile. The Iced GUI is compiled on tags and `workflow_dispatch`. The first CI run still compiles from a cold cache; later pushes should be much faster. Local `cargo build --release` still includes the GUI (default `gui` feature).
+GitHub Actions on every `main` push, tag, and `workflow_dispatch` builds one user artifact: `deobf-windows-x64.zip` containing `deobf.exe` plus `SHA256SUMS`. CI compiles the tiny `deobf-stub` first (no iced), then builds `deobf` with the GUI feature and embeds that stub via `DEOBF_STUB_PATH`. rust-cache + sccache and a faster CI release profile stay enabled. The first CI run after iced returns is slower; later pushes should hit cache.

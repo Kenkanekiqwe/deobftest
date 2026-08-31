@@ -1,6 +1,6 @@
 [package]
 name = "deobf"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 description = "Windows software protection and authenticated runtime packaging toolkit"
 license = "MIT"
@@ -30,10 +30,10 @@ windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_Debug", 
 [dev-dependencies]
 tempfile = "3"
 
+# Internal PE overlay loader and compile-time embed source. Not a user download.
 [[bin]]
-name = "deobf-gui"
-path = "src/bin/deobf-gui.rs"
-required-features = ["gui"]
+name = "deobf-stub"
+path = "src/bin/deobf-stub.rs"
 
 [profile.dev]
 opt-level = 0
