@@ -333,7 +333,7 @@ impl App {
                 "Protect complete. {} → {} bytes. Double-click / open the output to run (PE, JAR, Python; no password).{}",
                 r.input_size,
                 r.output_size,
-                if pass.is_empty() { "" } else { " Extra password lock is on — use Runtime / deobf run for JAR and Python." }
+                if pass.is_empty() { "" } else { " Extra password lock is on for PE/container; JAR/Python stay self-running." }
             ))
             }
             Err(e) => self.log_line(format!("Protection failed: {e:#}")),
@@ -633,7 +633,7 @@ impl App {
             ]
             .spacing(16),
             button(text("Run protected")).on_press(Message::Run).style(button::primary),
-            text("PE, JAR, and Python Protect output is self-running with no password. Double-click the file, or run `java -jar` / `python`. This Runtime page still launches extra-lock / legacy packages. Password is only needed for those.")
+            text("JAR/Python stay self-running zip/script even if extra lock is ticked (that lock is ignored for those formats). PE extra-lock and legacy packages still use this Runtime page.")
                 .size(13),
         ]
         .spacing(12)

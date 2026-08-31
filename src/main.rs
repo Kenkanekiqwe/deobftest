@@ -244,14 +244,11 @@ fn main() -> Result<ExitCode> {
                     "Runtime: output is a Windows PE stub; double-click it or use `deobf run`."
                 );
             } else if analysis.kind == "Jar" {
-                if pass.is_empty() {
-                    println!(
-                        "Runtime: output is a self-running JAR. Open it or run `java -jar` (no `deobf run` needed)."
-                    );
-                } else {
-                    println!(
-                        "Runtime: extra-lock JAR is not self-running; use `deobf run <file> jar`."
-                    );
+                println!(
+                    "Runtime: output is a self-running JAR. Open it or run `java -jar` (no `deobf run` needed)."
+                );
+                if !pass.is_empty() {
+                    println!("Note: extra password lock is ignored for JAR so Fabric/Forge can open a valid ZIP.");
                 }
             } else {
                 let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -259,12 +256,11 @@ fn main() -> Result<ExitCode> {
                     || ext.eq_ignore_ascii_case("pyw")
                     || ext.eq_ignore_ascii_case("pyz")
                 {
-                    if pass.is_empty() {
-                        println!(
-                            "Runtime: output is a self-running Python file. Open it or run `python` / `py` (no `deobf run` needed)."
-                        );
-                    } else {
-                        println!("Runtime: extra-lock Python is not self-running; use `deobf run <file> python`.");
+                    println!(
+                        "Runtime: output is a self-running Python file. Open it or run `python` / `py` (no `deobf run` needed)."
+                    );
+                    if !pass.is_empty() {
+                        println!("Note: extra password lock is ignored for Python so the file stays a valid script/zipapp.");
                     }
                 } else {
                     println!(

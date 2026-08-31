@@ -505,12 +505,22 @@ pub fn protect_file(
     let (payload, mut report) = protect(data, options)?;
     let kind = wrap_kind(input, zipapp, &report.analysis.kind);
     let mut raw_key = [0u8; 32];
-    if auto_key {
+    // JAR/Python/PE wrappers always need an embedded auto-key so the output
+    // stays a valid ZIP/script/PE. Extra password lock without wrapping is
+    // only for WrapKind::Container.
+    if auto_key
+        || matches!(
+            kind,
+            WrapKind::Pe | WrapKind::Jar | WrapKind::Python | WrapKind::PythonZipapp
+        )
+    {
         OsRng.fill_bytes(&mut raw_key);
+    }
+    if auto_key {
         report.passes.push("runtime:embedded-auto-key".into());
     }
-    let (out_bytes, wrapped) = match (auto_key, kind) {
-        (_, WrapKind::Pe) => {
+    let (out_bytes, wrapped) = match kind {
+        WrapKind::Pe => {
             let container = if auto_key {
                 encrypt_container(&payload, Unlock::RawKey(&raw_key))?
             } else {
@@ -530,32 +540,40 @@ pub fn protect_file(
             }
             (wrapped, true)
         }
-        (true, WrapKind::Jar) => {
+        WrapKind::Jar => {
             let bytes = selfrun::wrap_jar(&payload, &raw_key).context("build self-running JAR")?;
             report.passes.push("runtime:jar-loader".into());
+            if !auto_key {
+                report.passes.push("runtime:jar-loader-skips-extra-password".into());
+            }
             (bytes, true)
         }
-        (true, WrapKind::Python) => {
+        WrapKind::Python => {
             let bytes = selfrun::wrap_python(&payload, &raw_key, false)
                 .context("build self-running Python stub")?;
             report.passes.push("runtime:python-loader".into());
+            if !auto_key {
+                report.passes.push("runtime:python-loader-skips-extra-password".into());
+            }
             (bytes, true)
         }
-        (true, WrapKind::PythonZipapp) => {
+        WrapKind::PythonZipapp => {
             let bytes = selfrun::wrap_python(&payload, &raw_key, true)
                 .context("build self-running Python zipapp")?;
             report.passes.push("runtime:python-loader".into());
+            if !auto_key {
+                report.passes.push("runtime:python-loader-skips-extra-password".into());
+            }
             (bytes, true)
         }
-        (true, WrapKind::Container) => {
-            let mut out = encrypt_container(&payload, Unlock::RawKey(&raw_key))?;
-            out.extend_from_slice(&stub::encode_key_record(&raw_key));
-            (out, false)
-        }
-        (false, _) => {
-            // Extra password lock: authenticated v2 container. JAR/Python are
-            // not self-running in this mode; use `deobf run` / Studio Runtime.
-            (encrypt_container(&payload, Unlock::Password(pass))?, false)
+        WrapKind::Container => {
+            if auto_key {
+                let mut out = encrypt_container(&payload, Unlock::RawKey(&raw_key))?;
+                out.extend_from_slice(&stub::encode_key_record(&raw_key));
+                (out, false)
+            } else {
+                (encrypt_container(&payload, Unlock::Password(pass))?, false)
+            }
         }
     };
     atomic_write(output, &out_bytes)?;
