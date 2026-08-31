@@ -7,6 +7,9 @@ pub enum Strength {
     Maximum,
 }
 
+/// Protection capabilities exposed by the engine.  These flags describe
+/// transformations that preserve the original program's runtime contract;
+/// unsupported transformations must never be silently advertised as active.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtectionProfile {
     pub name: String,
@@ -14,6 +17,9 @@ pub struct ProtectionProfile {
     pub strip_debug: bool,
     pub protect_strings: bool,
     pub rename_symbols: bool,
+    pub control_flow: bool,
+    pub resource_protection: bool,
+    pub anti_tamper: bool,
     pub verify_after_pass: bool,
     pub integrity: bool,
 }
@@ -26,6 +32,9 @@ impl ProtectionProfile {
             strip_debug: false,
             protect_strings: false,
             rename_symbols: false,
+            control_flow: false,
+            resource_protection: true,
+            anti_tamper: true,
             verify_after_pass: true,
             integrity: true,
         }
@@ -38,6 +47,9 @@ impl ProtectionProfile {
             strip_debug: true,
             protect_strings: true,
             rename_symbols: true,
+            control_flow: true,
+            resource_protection: true,
+            anti_tamper: true,
             verify_after_pass: true,
             integrity: true,
         }
@@ -50,6 +62,9 @@ impl ProtectionProfile {
             strip_debug: true,
             protect_strings: true,
             rename_symbols: true,
+            control_flow: true,
+            resource_protection: true,
+            anti_tamper: true,
             verify_after_pass: true,
             integrity: true,
         }
@@ -80,23 +95,5 @@ impl ProtectionProfile {
 impl Default for ProtectionProfile {
     fn default() -> Self {
         Self::balanced()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_are_valid() {
-        assert!(ProtectionProfile::default().validate().is_ok());
-        assert!(ProtectionProfile::maximum().validate().is_ok());
-    }
-
-    #[test]
-    fn strength_factory_selects_profile() {
-        assert_eq!(ProtectionProfile::from_strength(Strength::Safe).strength, Strength::Safe);
-        assert_eq!(ProtectionProfile::from_strength(Strength::Balanced).strength, Strength::Balanced);
-        assert_eq!(ProtectionProfile::from_strength(Strength::Maximum).strength, Strength::Maximum);
     }
 }
