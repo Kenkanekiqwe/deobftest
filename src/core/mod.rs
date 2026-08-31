@@ -25,7 +25,7 @@ pub use formats::{parse_pe, zip_has_manifest, BinaryFormat, PeInfo};
 pub use limits::ResourceLimits;
 pub use loader::{detect_restored, launch_python, launch_restored, restore_and_detect, LoaderPolicy};
 pub use manifest::ProtectionManifest;
-pub use passes::{IntegrityGuard, SizeInvariant};
+pub use passes::{CapabilityGuard, IntegrityGuard, SizeInvariant};
 pub use pipeline::{Pass, Pipeline};
 pub use profile::{ProtectionProfile, Strength};
 pub use runtime::{default_runtime_output, run_protected, RuntimeKind};
