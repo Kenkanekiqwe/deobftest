@@ -8,7 +8,7 @@ use std::{fs::{self, File}, io::{Read, Write}, path::Path, time::Instant};
 
 use super::artifact::ArtifactKind;
 use super::pipeline::Pipeline;
-use super::{analyze, Analysis, IntegrityGuard, ProtectionProfile, SizeInvariant};
+use super::{analyze, Analysis, CapabilityGuard, IntegrityGuard, ProtectionProfile, SizeInvariant};
 
 const MAGIC: &[u8; 8] = b"DEOBF01\0";
 const VERSION: u8 = 2;
@@ -55,7 +55,7 @@ pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, Engin
     if data.is_empty() { bail!("artifact is empty"); }
     let analysis = analyze(&data).context("artifact analysis failed")?;
     let selected = profile(&options.profile); selected.validate().context("invalid protection profile")?;
-    let mut pipeline = Pipeline::new().add(SizeInvariant);
+    let mut pipeline = Pipeline::new().add(SizeInvariant).add(CapabilityGuard);
     if options.add_integrity { pipeline = pipeline.add(IntegrityGuard); }
     if options.verify { pipeline = pipeline.add(super::pipeline::VerifyPass); }
     let passes = pipeline.names().into_iter().map(str::to_owned).collect();
@@ -65,8 +65,6 @@ pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, Engin
     Ok((output, EngineResult { analysis: analysis.into(), input_size, output_size, elapsed_ms: started.elapsed().as_millis(), input_hash, output_hash, passes, compatibility_mode: false, format_preserved: true }))
 }
 
-/// Create the actual encrypted v2 package used by the GUI. The original bytes
-/// are never written to the destination before authenticated encryption.
 pub fn protect_file(input: &Path, output: &Path, pass: &[u8], options: &EngineOptions) -> Result<EngineResult> {
     if input == output { bail!("input and output must differ"); }
     let data = fs::read(input).with_context(|| format!("read {}", input.display()))?;
