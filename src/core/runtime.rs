@@ -39,7 +39,7 @@ pub fn run_protected(
     }
 
     let root = unique_runtime_dir()?;
-    fs::create_dir_all(&root).context("create runtime directory")?;
+    create_private_dir(&root).context("create runtime directory")?;
 
     let payload = root.join(match kind {
         RuntimeKind::Pe => "payload.exe",
@@ -49,6 +49,10 @@ pub fn run_protected(
 
     let result = (|| -> Result<ExitStatus> {
         unprotect_file(package, &payload, pass).context("authenticated package restore")?;
+        // Defense in depth: even though the containing directory is already
+        // owner-only (0700), also lock the decrypted payload file itself down
+        // to owner-only read/write in case of unusual ACL/umask setups.
+        restrict_file_permissions(&payload).context("restrict decrypted payload permissions")?;
 
         let status = match kind {
             RuntimeKind::Pe => Command::new(&payload).args(args).status(),
@@ -89,6 +93,40 @@ fn unique_runtime_dir() -> Result<PathBuf> {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     Ok(std::env::temp_dir().join(format!("deobf-runtime-{}-{suffix}", std::process::id())))
+}
+
+// System temp directories (e.g. /tmp) are typically shared and
+// world-traversable. Creating the runtime directory with default
+// permissions (usually 0755, governed by umask) would let any other local
+// user read the fully decrypted payload while the protected process runs,
+// or after an unclean shutdown skips cleanup. Set 0700 atomically at
+// creation time so there is no window where the directory is world- or
+// group-accessible.
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> Result<()> {
+    use std::fs::DirBuilder;
+    use std::os::unix::fs::DirBuilderExt;
+    DirBuilder::new()
+        .mode(0o700)
+        .create(path)
+        .with_context(|| format!("create private directory {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path).with_context(|| format!("create private directory {}", path.display()))
+}
+
+#[cfg(unix)]
+fn restrict_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("restrict permissions on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_file_permissions(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 pub fn default_runtime_output(input: &Path) -> PathBuf {

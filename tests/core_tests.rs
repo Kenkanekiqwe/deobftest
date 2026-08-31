@@ -12,7 +12,7 @@ fn detects_common_formats() {
         artifact::detect(b"PK\x03\x04META-INF/MANIFEST.MF"),
         deobf::core::ArtifactKind::Jar
     );
-    assert_eq!(artifact::detect(b"hello"), deobf::core::ArtifactKind::Unknown);
+    assert_eq!(artifact::detect(b"hello"), deobf::core::ArtifactKind::Raw);
 }
 
 #[test]

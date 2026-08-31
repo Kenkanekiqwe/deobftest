@@ -8,6 +8,7 @@ use std::{fs, path::{Path, PathBuf}};
 const MAGIC: &[u8; 8] = b"DEOBCMP1";
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
+const MIN_PASSWORD_LEN: usize = 12;
 
 #[derive(Debug, Clone)]
 pub struct CompatibilityManifest {
@@ -90,6 +91,9 @@ fn decode_manifest(data: &[u8]) -> Result<CompatibilityManifest> {
 /// other format-sensitive artifacts executable/openable after processing.
 pub fn protect_compatible(input: &Path, output: &Path, password: &[u8], artifact: &str, profile: &str) -> Result<PathBuf> {
     if input == output { bail!("input and output must differ"); }
+    if password.len() < MIN_PASSWORD_LEN {
+        bail!("password must contain at least {MIN_PASSWORD_LEN} characters");
+    }
     let data = fs::read(input).with_context(|| format!("read {}", input.display()))?;
     if data.is_empty() { bail!("input artifact is empty"); }
     fs::copy(input, output).with_context(|| format!("copy {} to {}", input.display(), output.display()))?;

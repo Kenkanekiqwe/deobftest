@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::{fs::{self, File}, io::{Read, Write}, path::Path, time::Instant};
 
 use super::artifact::ArtifactKind;
+use super::backends::{backend_for, BackendReport};
 use super::pipeline::Pipeline;
+use super::validation::validate;
 use super::{analyze, Analysis, CapabilityGuard, IntegrityGuard, ProtectionProfile, SizeInvariant};
 
 const MAGIC: &[u8; 8] = b"DEOBF01\0";
@@ -17,6 +19,10 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 const MAX_PAD: usize = 4096;
+// Matches the CLI/GUI prompt requirement. Enforced again here so any caller
+// that uses this crate as a library (bypassing the CLI's own password()
+// helper) cannot protect a file with an empty or trivially weak password.
+const MIN_PASSWORD_LEN: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineOptions { pub profile: String, pub verify: bool, pub add_integrity: bool }
@@ -55,11 +61,49 @@ pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, Engin
     if data.is_empty() { bail!("artifact is empty"); }
     let analysis = analyze(&data).context("artifact analysis failed")?;
     let selected = profile(&options.profile); selected.validate().context("invalid protection profile")?;
+
+    // Reject artifacts that look like an executable format but carry
+    // incomplete/inconsistent metadata (e.g. a truncated or hand-edited PE
+    // header) instead of silently protecting a file that will not run. This
+    // check existed in validation.rs but, like the format backends above,
+    // was never actually called from the protect path.
+    let report = validate(&analysis, &selected).context("artifact validation failed")?;
+    if !report.supported {
+        bail!(
+            "artifact failed validation: {}",
+            report.warnings.join("; ")
+        );
+    }
+
+    let input_size = data.len() as u64; let input_hash = digest(&data);
+
+    // Run the format-specific backend (PE validation, JAR bytecode/debug-info
+    // transform, or the Generic passthrough used for plain files like .txt)
+    // BEFORE the byte stream enters the generic pipeline + AEAD container.
+    // Previously this backend layer existed in backends.rs but was never
+    // invoked from the CLI's protect path, so `deobf protect` only ever
+    // encrypted the untouched bytes and none of the JAR/PE-specific
+    // protection logic actually ran.
+    let backend = backend_for(&data);
+    let backend_kind = backend.kind();
+    let original_for_verify = if options.verify { Some(data.clone()) } else { None };
+    let (data, backend_report): (Vec<u8>, BackendReport) = backend
+        .protect(data)
+        .with_context(|| format!("{backend_kind:?} protection backend failed"))?;
+    if let Some(original) = original_for_verify {
+        backend
+            .verify(&original, &data)
+            .with_context(|| format!("{backend_kind:?} backend verification failed"))?;
+    }
+
     let mut pipeline = Pipeline::new().add(SizeInvariant).add(CapabilityGuard);
     if options.add_integrity { pipeline = pipeline.add(IntegrityGuard); }
     if options.verify { pipeline = pipeline.add(super::pipeline::VerifyPass); }
-    let passes = pipeline.names().into_iter().map(str::to_owned).collect();
-    let input_size = data.len() as u64; let input_hash = digest(&data);
+    let mut passes: Vec<String> = pipeline.names().into_iter().map(str::to_owned).collect();
+    passes.insert(0, format!("backend:{backend_kind:?}"));
+    passes.extend(backend_report.notes.iter().cloned());
+    passes.extend(report.warnings.iter().map(|w| format!("warning: {w}")));
+
     let output = pipeline.run(data, &selected).context("protection pipeline failed")?;
     let output_size = output.len() as u64; let output_hash = digest(&output);
     Ok((output, EngineResult { analysis: analysis.into(), input_size, output_size, elapsed_ms: started.elapsed().as_millis(), input_hash, output_hash, passes, compatibility_mode: false, format_preserved: true }))
@@ -67,6 +111,9 @@ pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, Engin
 
 pub fn protect_file(input: &Path, output: &Path, pass: &[u8], options: &EngineOptions) -> Result<EngineResult> {
     if input == output { bail!("input and output must differ"); }
+    if pass.len() < MIN_PASSWORD_LEN {
+        bail!("password must contain at least {MIN_PASSWORD_LEN} characters");
+    }
     let data = fs::read(input).with_context(|| format!("read {}", input.display()))?;
     let (payload, mut report) = protect(data, options)?;
     let plain_len = payload.len() as u64;
