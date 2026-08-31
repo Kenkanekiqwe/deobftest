@@ -1,8 +1,8 @@
 [package]
 name = "deobf"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
-description = "Windows software protection and authenticated packaging toolkit"
+description = "Windows software protection and authenticated runtime packaging toolkit"
 license = "MIT"
 
 [dependencies]
@@ -25,8 +25,12 @@ windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_Debug"] 
 [dev-dependencies]
 tempfile = "3"
 
-# Release builds are tuned for a fast Windows CI build. Runtime encryption
-# remains authenticated independently of these compiler settings.
+[profile.dev]
+opt-level = 0
+debug = 1
+incremental = true
+codegen-units = 256
+
 [profile.release]
 opt-level = 3
 lto = false
