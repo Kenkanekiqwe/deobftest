@@ -1,20 +1,32 @@
 package deobf;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Method;
 import java.math.BigInteger;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
+import java.util.Locale;
+import java.util.Properties;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 /**
  * Self-running JAR stub. Decrypts the wrapped original JAR (DEOBFW01 +
- * XChaCha20-Poly1305) and launches it with the same JVM via {@code java -jar}.
+ * XChaCha20-Poly1305) in-process and either invokes the original Main-Class
+ * or injects classes into a mod loader classpath.
  */
 public final class Loader {
     private static final byte[] MAGIC = new byte[] {'D', 'E', 'O', 'B', 'F', 'W', '0', '1'};
@@ -23,39 +35,374 @@ public final class Loader {
             new BigInteger("0ffffffc0ffffffc0ffffffc0fffffff", 16);
     private static final BigInteger MASK128 = BigInteger.ONE.shiftLeft(128).subtract(BigInteger.ONE);
 
+    private static final Object LOCK = new Object();
+    private static boolean installed;
+    private static Path decryptedJar;
+    private static Path classesOnlyJar;
+    private static Properties meta = new Properties();
+
     public static void main(String[] args) throws Exception {
-        byte[] key = readResource("key.bin");
-        byte[] wrapped = readResource("payload.bin");
-        if (key.length != 32) {
-            throw new IllegalStateException("invalid DEOBF key");
+        install();
+        String mainClass = originalMainClass();
+        if (mainClass == null || mainClass.length() == 0) {
+            return;
         }
-        byte[] jar = decryptWrapper(key, wrapped);
-        Path tmp = Files.createTempFile("deobf-", ".jar");
-        tmp.toFile().deleteOnExit();
-        int code = 1;
+        Path full = decryptedJar();
+        if (full == null) {
+            throw new IllegalStateException("DEOBF payload was not decrypted");
+        }
+        List urls = new ArrayList();
+        urls.add(full.toUri().toURL());
+        List nested = extractNestedJars(full);
+        for (int i = 0; i < nested.size(); i++) {
+            urls.add(((Path) nested.get(i)).toUri().toURL());
+        }
+        URL[] arr = (URL[]) urls.toArray(new URL[urls.size()]);
+        URLClassLoader cl = new URLClassLoader(arr, Loader.class.getClassLoader());
+        Thread.currentThread().setContextClassLoader(cl);
+        Class cls = Class.forName(mainClass, true, cl);
+        Method m = cls.getMethod("main", String[].class);
+        String[] a = args == null ? new String[0] : args;
         try {
-            Files.write(tmp, jar);
-            File javaBin = new File(new File(System.getProperty("java.home"), "bin"),
-                    File.separatorChar == '\\' ? "java.exe" : "java");
-            List<String> cmd = new ArrayList<String>();
-            cmd.add(javaBin.getPath());
-            cmd.add("-jar");
-            cmd.add(tmp.toString());
-            if (args != null) {
-                for (int i = 0; i < args.length; i++) {
-                    cmd.add(args[i]);
+            m.invoke(null, new Object[] { a });
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            Throwable c = e.getCause();
+            if (c instanceof Exception) {
+                throw (Exception) c;
+            }
+            if (c instanceof Error) {
+                throw (Error) c;
+            }
+            throw e;
+        }
+    }
+
+    public static void install() {
+        synchronized (LOCK) {
+            if (installed) {
+                return;
+            }
+            try {
+                doInstall();
+                installed = true;
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new RuntimeException("DEOBF install failed", e);
+            }
+        }
+    }
+
+    public static Path decryptedJar() {
+        install();
+        return decryptedJar;
+    }
+
+    public static Path classesOnlyJar() {
+        install();
+        return classesOnlyJar;
+    }
+
+    public static String originalMainClass() {
+        install();
+        String v = meta.getProperty("original-main-class", "");
+        return v.trim();
+    }
+
+    public static String originalPluginMain() {
+        install();
+        String v = meta.getProperty("original-plugin-main", "");
+        return v.trim();
+    }
+
+    static void addToLoader(ClassLoader cl, Path path) {
+        if (cl == null || path == null) {
+            return;
+        }
+        tryAddUrl(cl, path);
+    }
+
+    private static void doInstall() throws Exception {
+        Located loc = locatePayload();
+        byte[] jar = decryptWrapper(loc.key, loc.wrapped);
+        if (loc.meta != null) {
+            meta = loc.meta;
+        }
+        Path full = Files.createTempFile("deobf-full-", ".jar");
+        full.toFile().deleteOnExit();
+        Files.write(full, jar);
+        decryptedJar = full;
+
+        byte[] classesOnly = buildClassesOnly(jar);
+        Path cls = Files.createTempFile("deobf-cls-", ".jar");
+        cls.toFile().deleteOnExit();
+        Files.write(cls, classesOnly);
+        classesOnlyJar = cls;
+
+        injectPath(cls);
+        List nested = extractNestedJarsFromBytes(jar, true);
+        for (int i = 0; i < nested.size(); i++) {
+            injectPath((Path) nested.get(i));
+        }
+    }
+
+    private static final class Located {
+        byte[] key;
+        byte[] wrapped;
+        Properties meta;
+    }
+
+    private static Located locatePayload() throws IOException {
+        Located fromSelf = readFromClass(Loader.class);
+        Located preferred = null;
+        ClassLoader[] loaders = new ClassLoader[] {
+            Thread.currentThread().getContextClassLoader(),
+            Loader.class.getClassLoader(),
+            ClassLoader.getSystemClassLoader()
+        };
+        for (int i = 0; i < loaders.length; i++) {
+            ClassLoader cl = loaders[i];
+            if (cl == null) {
+                continue;
+            }
+            Enumeration urls;
+            try {
+                urls = cl.getResources("deobf/meta.properties");
+            } catch (IOException e) {
+                continue;
+            }
+            while (urls.hasMoreElements()) {
+                URL url = (URL) urls.nextElement();
+                Located loc = readFromMetaUrl(url);
+                if (loc == null) {
+                    continue;
+                }
+                if (loc.meta != null && "true".equalsIgnoreCase(loc.meta.getProperty("full-original", ""))) {
+                    return loc;
+                }
+                if (preferred == null) {
+                    preferred = loc;
                 }
             }
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.inheritIO();
-            code = pb.start().waitFor();
-        } finally {
-            try {
-                Files.deleteIfExists(tmp);
-            } catch (Exception ignored) {
-            }
         }
-        System.exit(code);
+        if (preferred != null) {
+            return preferred;
+        }
+        if (fromSelf != null) {
+            return fromSelf;
+        }
+        throw new FileNotFoundException("deobf/payload.bin");
+    }
+
+    private static Located readFromClass(Class anchor) throws IOException {
+        InputStream metaIn = anchor.getResourceAsStream("meta.properties");
+        InputStream keyIn = anchor.getResourceAsStream("key.bin");
+        InputStream payIn = anchor.getResourceAsStream("payload.bin");
+        if (keyIn == null || payIn == null) {
+            return null;
+        }
+        Located loc = new Located();
+        loc.key = readAll(keyIn);
+        loc.wrapped = readAll(payIn);
+        loc.meta = new Properties();
+        if (metaIn != null) {
+            loc.meta.load(metaIn);
+            metaIn.close();
+        }
+        keyIn.close();
+        payIn.close();
+        return loc;
+    }
+
+    private static Located readFromMetaUrl(URL metaUrl) {
+        try {
+            String s = metaUrl.toExternalForm();
+            if (!s.endsWith("meta.properties")) {
+                return null;
+            }
+            String base = s.substring(0, s.length() - "meta.properties".length());
+            Located loc = new Located();
+            loc.meta = new Properties();
+            InputStream in = metaUrl.openStream();
+            try {
+                loc.meta.load(in);
+            } finally {
+                in.close();
+            }
+            loc.key = readAll(new URL(base + "key.bin").openStream());
+            loc.wrapped = readAll(new URL(base + "payload.bin").openStream());
+            if (loc.key.length != 32) {
+                return null;
+            }
+            return loc;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void injectPath(Path path) {
+        if (path == null) {
+            return;
+        }
+        if (invokeAddToClassPath("net.fabricmc.loader.impl.launch.FabricLauncherBase", path)) {
+            return;
+        }
+        if (invokeAddToClassPath("org.quiltmc.loader.impl.launch.QuiltLauncherBase", path)) {
+            return;
+        }
+        ClassLoader ctx = Thread.currentThread().getContextClassLoader();
+        if (tryAddUrl(ctx, path)) {
+            return;
+        }
+        tryAddUrl(Loader.class.getClassLoader(), path);
+        tryAddUrl(ClassLoader.getSystemClassLoader(), path);
+    }
+
+    private static boolean invokeAddToClassPath(String launcherBase, Path path) {
+        try {
+            Class c = Class.forName(launcherBase);
+            Object launcher = c.getMethod("getLauncher").invoke(null);
+            Method m;
+            try {
+                m = launcher.getClass().getMethod("addToClassPath", Path.class);
+                m.invoke(launcher, path);
+                return true;
+            } catch (NoSuchMethodException e) {
+                m = launcher.getClass().getMethod("addToClassPath", Path.class, String[].class);
+                m.invoke(launcher, path, new String[0]);
+                return true;
+            }
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    static boolean tryAddUrl(ClassLoader cl, Path path) {
+        if (cl == null || path == null) {
+            return false;
+        }
+        URL url;
+        try {
+            url = path.toUri().toURL();
+        } catch (Exception e) {
+            return false;
+        }
+        Class c = cl.getClass();
+        while (c != null) {
+            try {
+                Method m = c.getDeclaredMethod("addURL", URL.class);
+                m.setAccessible(true);
+                m.invoke(cl, url);
+                return true;
+            } catch (Throwable ignored) {
+            }
+            try {
+                Method m = c.getDeclaredMethod("appendToClassPathForInstrumentation", String.class);
+                m.setAccessible(true);
+                m.invoke(cl, path.toAbsolutePath().toString());
+                return true;
+            } catch (Throwable ignored) {
+            }
+            c = c.getSuperclass();
+        }
+        return false;
+    }
+
+    private static List extractNestedJars(Path fullJar) throws IOException {
+        byte[] data = Files.readAllBytes(fullJar);
+        return extractNestedJarsFromBytes(data, false);
+    }
+
+    private static List extractNestedJarsFromBytes(byte[] jar, boolean classesOnlyNested) throws IOException {
+        List out = new ArrayList();
+        ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(jar));
+        try {
+            ZipEntry e;
+            while ((e = zis.getNextEntry()) != null) {
+                if (e.isDirectory()) {
+                    continue;
+                }
+                String name = e.getName().replace('\\', '/');
+                if (!name.toLowerCase(Locale.ROOT).endsWith(".jar")) {
+                    continue;
+                }
+                byte[] nested = readRemaining(zis);
+                if (classesOnlyNested) {
+                    nested = buildClassesOnly(nested);
+                }
+                String safe = name.replace('/', '_').replace('\\', '_');
+                Path tmp = Files.createTempFile("deobf-n-" + safe + "-", ".jar");
+                tmp.toFile().deleteOnExit();
+                Files.write(tmp, nested);
+                out.add(tmp);
+            }
+        } finally {
+            zis.close();
+        }
+        return out;
+    }
+
+    private static byte[] buildClassesOnly(byte[] jar) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        ZipOutputStream zos = new ZipOutputStream(bos);
+        ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(jar));
+        try {
+            ZipEntry e;
+            while ((e = zis.getNextEntry()) != null) {
+                if (e.isDirectory()) {
+                    continue;
+                }
+                String name = e.getName().replace('\\', '/');
+                if (isDroppedFromClassesOnly(name)) {
+                    continue;
+                }
+                byte[] data = readRemaining(zis);
+                String lower = name.toLowerCase(Locale.ROOT);
+                if (lower.endsWith(".jar")) {
+                    try {
+                        data = buildClassesOnly(data);
+                    } catch (Exception ignored) {
+                    }
+                } else if (!lower.endsWith(".class")) {
+                    continue;
+                }
+                ZipEntry out = new ZipEntry(name);
+                zos.putNextEntry(out);
+                zos.write(data);
+                zos.closeEntry();
+            }
+        } finally {
+            zis.close();
+            zos.close();
+        }
+        return bos.toByteArray();
+    }
+
+    private static boolean isDroppedFromClassesOnly(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        String base = name;
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) {
+            base = name.substring(slash + 1);
+        }
+        String baseLower = base.toLowerCase(Locale.ROOT);
+        if (baseLower.equals("fabric.mod.json")
+                || baseLower.equals("quilt.mod.json")
+                || baseLower.equals("plugin.yml")
+                || baseLower.equals("paper-plugin.yml")
+                || baseLower.equals("bungee.yml")
+                || baseLower.equals("velocity-plugin.json")
+                || baseLower.equals("mods.toml")
+                || baseLower.equals("neoforge.mods.toml")
+                || baseLower.equals("mcmod.info")
+                || baseLower.equals("pack.mcmeta")) {
+            return true;
+        }
+        if (lower.endsWith(".java") || lower.endsWith(".kt") || lower.endsWith(".kts")
+                || lower.endsWith(".scala") || lower.endsWith(".mjs") || lower.endsWith(".map")) {
+            return true;
+        }
+        return false;
     }
 
     private static byte[] readResource(String name) throws IOException {
@@ -64,16 +411,28 @@ public final class Loader {
             throw new FileNotFoundException("deobf/" + name);
         }
         try {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) >= 0) {
-                out.write(buf, 0, n);
-            }
-            return out.toByteArray();
+            return readAll(in);
         } finally {
             in.close();
         }
+    }
+
+    private static byte[] readAll(InputStream in) throws IOException {
+        try {
+            return readRemaining(in);
+        } finally {
+            in.close();
+        }
+    }
+
+    private static byte[] readRemaining(InputStream in) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) >= 0) {
+            out.write(buf, 0, n);
+        }
+        return out.toByteArray();
     }
 
     static byte[] decryptWrapper(byte[] key, byte[] wrapped) {

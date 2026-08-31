@@ -18,7 +18,7 @@ The existing container already provides:
 - Atomic writes through temporary files.
 - Original filename and extension on Protect output (`.exe` stays `.exe`).
 - PE outputs wrapped as a launchable Windows loader stub plus authenticated overlay.
-- JAR auto-key output is a valid ZIP/JAR (`java -jar` / double-click) with a vendored `deobf.Loader`.
+- JAR auto-key output stays a valid ZIP/JAR: apps double-click / `java -jar`; Minecraft/Bukkit/Fabric/Forge/Quilt mods keep metadata, assets, mixin JSON and nested-jar *wrappers* so they still drop into a mods folder. Original classes and nested-mod bytecode live only inside encrypted `deobf/payload.bin` (DEOBFW01). Nested jars are themselves DEOBF-wrapped (never copied plaintext). A vendored `deobf.Loader` decrypts in-process (no `java -jar` subprocess).
 - Python auto-key output is a valid `.py` (or `.pyz` zipapp) that decrypts and execs the original with no extra packages.
 - Backward-compatible reading of legacy passworded `.deobf` packages when a password is supplied.
 
@@ -94,7 +94,7 @@ deobf run <package> <pe|jar|python>
 
 No separate `deobf-gui.exe` or `deobf-stub.exe` is shipped. The PE runtime stub used when protecting EXEs is compiled in at build time, so Protect does not need a sibling stub next to the app.
 
-`deobf protect input.exe` (no `-p` / `--password`) is the default: it writes `protected/input.exe` with an embedded auto-key. Double-click the output and it decrypts via the existing AEAD runtime, launches the original, then cleans up. `deobf protect app.jar` writes a self-running `protected/app.jar` (`java -jar`). `deobf protect app.py` writes a self-running `protected/app.py` (`python` / `py`). Optional `--password` extra-lock for JAR/Python still uses the authenticated container and `deobf run`.
+`deobf protect input.exe` (no `-p` / `--password`) is the default: it writes `protected/input.exe` with an embedded auto-key. Double-click the output and it decrypts via the existing AEAD runtime, launches the original, then cleans up. `deobf protect app.jar` writes `protected/app.jar`. Apps with a `Main-Class` still run via `java -jar` / double-click (`deobf.Loader` decrypts and invokes the original main in-process, including jar-in-jar). Mods keep `fabric.mod.json` / `mods.toml` / `plugin.yml` and boot through Fabric `preLaunch` (`deobf.Boot`), a Forge `ITransformationService` (`deobf.ForgeService`), or a Bukkit main proxy (`deobf.BukkitPlugin`). Nested mods stay encrypted; unprotect restores the full original inner JAR. `deobf protect app.py` writes a self-running `protected/app.py` (`python` / `py`). Optional `--password` extra-lock for JAR/Python still uses the authenticated container and `deobf run`.
 
 `--password` is an optional extra lock. Legacy passworded `.deobf` files and extra-lock stubs still unprotect when a password is supplied (`--password` or a prompt). Auto-keyed files restore without prompting.
 

@@ -4,6 +4,8 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
 };
 use rand::{rngs::OsRng, RngCore};
+use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::io::{Cursor, Read, Write};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
@@ -12,7 +14,14 @@ use super::stub::AUTO_KEY_LEN;
 pub const WRAPPER_MAGIC: &[u8; 8] = b"DEOBFW01";
 pub const WRAPPER_HEADER_LEN: usize = 34;
 const LOADER_CLASS: &[u8] = include_bytes!("../../vendor/java/deobf/Loader.class");
+const LOADER_LOCATED_CLASS: &[u8] =
+    include_bytes!("../../vendor/java/deobf/Loader$Located.class");
+const LOADER_SYNTH_CLASS: &[u8] = include_bytes!("../../vendor/java/deobf/Loader$1.class");
+const BOOT_CLASS: &[u8] = include_bytes!("../../vendor/java/deobf/Boot.class");
+const FORGE_SERVICE_CLASS: &[u8] = include_bytes!("../../vendor/java/deobf/ForgeService.class");
+const BUKKIT_PLUGIN_CLASS: &[u8] = include_bytes!("../../vendor/java/deobf/BukkitPlugin.class");
 const PYTHON_TEMPLATE: &str = include_str!("../../vendor/python/loader_template.py");
+const MAX_NESTED_JAR_DEPTH: u32 = 8;
 
 pub fn encrypt_wrapper(key: &[u8; AUTO_KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
     let mut nonce = [0u8; 24];
@@ -110,31 +119,456 @@ pub fn looks_like_zipapp(data: &[u8]) -> bool {
 }
 
 pub fn wrap_jar(payload: &[u8], key: &[u8; AUTO_KEY_LEN]) -> Result<Vec<u8>> {
+    wrap_jar_inner(payload, key, 0)
+}
+
+fn wrap_jar_inner(
+    payload: &[u8],
+    key: &[u8; AUTO_KEY_LEN],
+    depth: u32,
+) -> Result<Vec<u8>> {
+    if depth > MAX_NESTED_JAR_DEPTH {
+        bail!("nested JAR depth exceeded");
+    }
     let envelope = encrypt_wrapper(key, payload)?;
-    let main = jar_main_class(payload).unwrap_or_default();
-    let mut cursor = Cursor::new(Vec::with_capacity(
-        LOADER_CLASS.len() + envelope.len() + 256,
-    ));
+    let files = read_zip_files(payload)?;
+    let original_main = jar_main_class(payload).unwrap_or_default();
+    let mut plugin_main = String::new();
+    let mut has_forge_meta = false;
+
+    let mut out_entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut seen = HashSet::new();
+
+    for (name, data) in files {
+        let norm = name.replace('\\', "/");
+        if norm.split('/').any(|p| p == "..") {
+            continue;
+        }
+        let lower = norm.to_ascii_lowercase();
+        let base = file_name_lower(&norm);
+
+        if lower == "meta-inf/manifest.mf" {
+            continue;
+        }
+
+        if base == "fabric.mod.json" || base == "quilt.mod.json" {
+            let edited = prepend_prelaunch(&data).unwrap_or(data);
+            push_entry(&mut out_entries, &mut seen, &norm, edited);
+            continue;
+        }
+
+        if base == "plugin.yml" || base == "paper-plugin.yml" || base == "bungee.yml" {
+            let (edited, orig) = rewrite_plugin_main(&data);
+            if plugin_main.is_empty() {
+                plugin_main = orig;
+            }
+            push_entry(&mut out_entries, &mut seen, &norm, edited);
+            continue;
+        }
+
+        if lower == "meta-inf/mods.toml"
+            || lower == "meta-inf/neoforge.mods.toml"
+            || base == "mods.toml"
+            || base == "neoforge.mods.toml"
+        {
+            has_forge_meta = true;
+            push_entry(&mut out_entries, &mut seen, &norm, data);
+            continue;
+        }
+
+        if lower.ends_with(".jar") {
+            if depth < MAX_NESTED_JAR_DEPTH {
+                let mut nested_key = [0u8; AUTO_KEY_LEN];
+                OsRng.fill_bytes(&mut nested_key);
+                if let Ok(wrapped) = wrap_jar_inner(&data, &nested_key, depth + 1) {
+                    push_entry(&mut out_entries, &mut seen, &norm, wrapped);
+                }
+            }
+            continue;
+        }
+
+        if should_skip_passthrough(&norm) {
+            continue;
+        }
+
+        push_entry(&mut out_entries, &mut seen, &norm, data);
+    }
+
+    let orig_manifest = zip_bytes(payload, "META-INF/MANIFEST.MF");
+    let manifest = merge_manifest(orig_manifest.as_deref(), &original_main);
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "META-INF/MANIFEST.MF",
+        manifest,
+    );
+
+    if has_forge_meta {
+        let path = "META-INF/services/cpw.mods.modlauncher.api.ITransformationService";
+        if let Some(existing) = out_entries.iter_mut().find(|(n, _)| n == path) {
+            let text = String::from_utf8_lossy(&existing.1);
+            if !text.lines().any(|l| l.trim() == "deobf.ForgeService") {
+                if !existing.1.ends_with(b"\n") {
+                    existing.1.push(b'\n');
+                }
+                existing.1.extend_from_slice(b"deobf.ForgeService\n");
+            }
+        } else {
+            push_entry(
+                &mut out_entries,
+                &mut seen,
+                path,
+                b"deobf.ForgeService\n".to_vec(),
+            );
+        }
+    }
+
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "deobf/Loader.class",
+        LOADER_CLASS.to_vec(),
+    );
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "deobf/Loader$Located.class",
+        LOADER_LOCATED_CLASS.to_vec(),
+    );
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "deobf/Loader$1.class",
+        LOADER_SYNTH_CLASS.to_vec(),
+    );
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "deobf/Boot.class",
+        BOOT_CLASS.to_vec(),
+    );
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "deobf/ForgeService.class",
+        FORGE_SERVICE_CLASS.to_vec(),
+    );
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "deobf/BukkitPlugin.class",
+        BUKKIT_PLUGIN_CLASS.to_vec(),
+    );
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "deobf/key.bin",
+        key.to_vec(),
+    );
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "deobf/payload.bin",
+        envelope,
+    );
+
+    let mut meta = format!("original-main-class={original_main}\n");
+    if !plugin_main.is_empty() {
+        meta.push_str(&format!("original-plugin-main={plugin_main}\n"));
+    }
+    if depth == 0 {
+        meta.push_str("full-original=true\n");
+    }
+    push_entry(
+        &mut out_entries,
+        &mut seen,
+        "deobf/meta.properties",
+        meta.into_bytes(),
+    );
+
+    write_zip(out_entries)
+}
+
+fn push_entry(
+    out: &mut Vec<(String, Vec<u8>)>,
+    seen: &mut HashSet<String>,
+    name: &str,
+    data: Vec<u8>,
+) {
+    if seen.insert(name.to_string()) {
+        out.push((name.to_string(), data));
+    }
+}
+
+fn file_name_lower(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase()
+}
+
+fn should_skip_passthrough(name: &str) -> bool {
+    let lower = name.replace('\\', "/").to_ascii_lowercase();
+    if lower.starts_with("deobf/") {
+        return true;
+    }
+    if lower.contains("/.git/")
+        || lower.starts_with(".git/")
+        || lower == ".git"
+        || lower.ends_with("/.gitignore")
+        || lower == ".gitignore"
+        || lower.ends_with("/.gitattributes")
+        || lower == ".gitattributes"
+        || lower.contains("/.svn/")
+        || lower.starts_with(".svn/")
+    {
+        return true;
+    }
+    if lower.ends_with(".class")
+        || lower.ends_with(".java")
+        || lower.ends_with(".kt")
+        || lower.ends_with(".kts")
+        || lower.ends_with(".scala")
+        || lower.ends_with(".mjs")
+        || lower.ends_with(".map")
+    {
+        return true;
+    }
+    if is_signature_name(&lower) {
+        return true;
+    }
+    false
+}
+
+fn is_signature_name(lower: &str) -> bool {
+    lower.starts_with("meta-inf/")
+        && (lower.ends_with(".sf")
+            || lower.ends_with(".rsa")
+            || lower.ends_with(".dsa")
+            || lower.ends_with(".ec"))
+}
+
+fn read_zip_files(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut archive = ZipArchive::new(Cursor::new(data)).context("payload is not a JAR/ZIP")?;
+    let mut files = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).context("cannot read JAR entry")?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_owned();
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf)?;
+        files.push((name, buf));
+    }
+    Ok(files)
+}
+
+fn write_zip(entries: Vec<(String, Vec<u8>)>) -> Result<Vec<u8>> {
+    let mut cursor = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut cursor);
         let opts = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
             .unix_permissions(0o644);
-        zip.start_file("META-INF/MANIFEST.MF", opts)?;
-        zip.write_all(
-            b"Manifest-Version: 1.0\r\nMain-Class: deobf.Loader\r\nCreated-By: DEOBF\r\n\r\n",
-        )?;
-        zip.start_file("deobf/Loader.class", opts)?;
-        zip.write_all(LOADER_CLASS)?;
-        zip.start_file("deobf/key.bin", opts)?;
-        zip.write_all(key)?;
-        zip.start_file("deobf/payload.bin", opts)?;
-        zip.write_all(&envelope)?;
-        zip.start_file("deobf/meta.properties", opts)?;
-        zip.write_all(format!("original-main-class={main}\n").as_bytes())?;
+        for (name, data) in entries {
+            zip.start_file(name, opts)?;
+            zip.write_all(&data)?;
+        }
         zip.finish().context("finish self-running JAR")?;
     }
     Ok(cursor.into_inner())
+}
+
+fn prepend_prelaunch(json_bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut v: Value = serde_json::from_slice(json_bytes).context("mod JSON")?;
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("mod JSON is not an object"))?;
+    let entrypoints = obj
+        .entry("entrypoints")
+        .or_insert_with(|| json!({}));
+    let map = entrypoints
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("entrypoints is not an object"))?;
+    let pre = map.entry("preLaunch").or_insert_with(|| json!([]));
+    let already = match pre {
+        Value::Array(arr) => arr.iter().any(is_boot_entry),
+        Value::String(s) => s == "deobf.Boot",
+        Value::Object(o) => o.get("value").and_then(|x| x.as_str()) == Some("deobf.Boot"),
+        _ => false,
+    };
+    if !already {
+        match pre {
+            Value::Array(arr) => arr.insert(0, json!("deobf.Boot")),
+            Value::String(s) => {
+                let prev = s.clone();
+                *pre = json!(["deobf.Boot", prev]);
+            }
+            _ => *pre = json!(["deobf.Boot"]),
+        }
+    }
+    Ok(serde_json::to_vec_pretty(&v)?)
+}
+
+fn is_boot_entry(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s == "deobf.Boot",
+        Value::Object(o) => o.get("value").and_then(|x| x.as_str()) == Some("deobf.Boot"),
+        _ => false,
+    }
+}
+
+fn rewrite_plugin_main(data: &[u8]) -> (Vec<u8>, String) {
+    let text = match std::str::from_utf8(data) {
+        Ok(t) => t,
+        Err(_) => return (data.to_vec(), String::new()),
+    };
+    let mut orig = String::new();
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        let ended = line.ends_with('\n');
+        let raw = line.trim_end_matches('\n').trim_end_matches('\r');
+        let trimmed = raw.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("main:") {
+            if orig.is_empty() {
+                orig = rest
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+            }
+            let indent_len = raw.len() - trimmed.len();
+            out.push_str(&raw[..indent_len]);
+            out.push_str("main: deobf.BukkitPlugin");
+            if ended {
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+        }
+    }
+    (out.into_bytes(), orig)
+}
+
+fn merge_manifest(original: Option<&[u8]>, original_main: &str) -> Vec<u8> {
+    let mut attrs: Vec<(String, String)> = Vec::new();
+    if let Some(bytes) = original {
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            attrs = manifest_main_attrs(text);
+        }
+    }
+    if attrs
+        .iter()
+        .all(|(k, _)| !k.eq_ignore_ascii_case("Manifest-Version"))
+    {
+        attrs.insert(0, ("Manifest-Version".into(), "1.0".into()));
+    }
+
+    let had_main = !original_main.is_empty()
+        || attrs
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("Main-Class") && !v.is_empty());
+    let start = if original_main.is_empty() {
+        attrs
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Main-Class"))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    } else {
+        original_main.to_string()
+    };
+
+    attrs.retain(|(k, _)| {
+        !k.eq_ignore_ascii_case("Main-Class") && !k.eq_ignore_ascii_case("Start-Class")
+    });
+    if had_main && !start.is_empty() {
+        attrs.push(("Main-Class".into(), "deobf.Loader".into()));
+        attrs.push(("Start-Class".into(), start));
+    }
+    if attrs
+        .iter()
+        .all(|(k, _)| !k.eq_ignore_ascii_case("Created-By"))
+    {
+        attrs.push(("Created-By".into(), "DEOBF".into()));
+    }
+
+    let mut out = String::new();
+    for (k, v) in attrs {
+        write_manifest_line(&mut out, &k, &v);
+    }
+    out.push_str("\r\n");
+    out.into_bytes()
+}
+
+fn manifest_main_attrs(text: &str) -> Vec<(String, String)> {
+    let mut continued = String::new();
+    let mut attrs = Vec::new();
+    let mut in_main = true;
+    for raw in text.lines() {
+        if !in_main {
+            break;
+        }
+        let line = raw.trim_end().trim_end_matches('\r');
+        if let Some(rest) = line.strip_prefix(' ') {
+            continued.push_str(rest);
+            continue;
+        }
+        if !continued.is_empty() {
+            if continued.trim().is_empty() {
+                in_main = false;
+            } else if let Some((k, v)) = split_manifest_attr(&continued) {
+                attrs.push((k, v));
+            }
+            continued.clear();
+        }
+        if line.is_empty() {
+            in_main = false;
+            continue;
+        }
+        continued.push_str(line);
+    }
+    if in_main && !continued.is_empty() {
+        if let Some((k, v)) = split_manifest_attr(&continued) {
+            attrs.push((k, v));
+        }
+    }
+    attrs
+}
+
+fn split_manifest_attr(line: &str) -> Option<(String, String)> {
+    let (k, v) = line.split_once(':')?;
+    let k = k.trim();
+    if k.is_empty() {
+        return None;
+    }
+    Some((k.to_string(), v.trim().to_string()))
+}
+
+fn write_manifest_line(out: &mut String, key: &str, value: &str) {
+    let line = format!("{key}: {value}");
+    let bytes = line.as_bytes();
+    if bytes.len() <= 70 {
+        out.push_str(&line);
+        out.push_str("\r\n");
+        return;
+    }
+    let mut first = true;
+    let mut i = 0;
+    while i < bytes.len() {
+        let take = if first { 70 } else { 69 };
+        let mut end = (i + take).min(bytes.len());
+        while end > i && !bytes[i..end].is_ascii() && (bytes[end - 1] & 0xc0) == 0x80 {
+            end -= 1;
+        }
+        if end == i {
+            end = (i + take).min(bytes.len());
+        }
+        if !first {
+            out.push(' ');
+        }
+        out.push_str(std::str::from_utf8(&bytes[i..end]).unwrap_or(""));
+        out.push_str("\r\n");
+        first = false;
+        i = end;
+    }
 }
 
 pub fn wrap_python(payload: &[u8], key: &[u8; AUTO_KEY_LEN], as_zipapp: bool) -> Result<Vec<u8>> {
