@@ -11,7 +11,10 @@ pub struct ResourceLimits {
 
 impl Default for ResourceLimits {
     fn default() -> Self {
-        Self { max_input_size: DEFAULT_MAX_INPUT, max_chunk_size: DEFAULT_MAX_CHUNK }
+        Self {
+            max_input_size: DEFAULT_MAX_INPUT,
+            max_chunk_size: DEFAULT_MAX_CHUNK,
+        }
     }
 }
 

@@ -6,8 +6,8 @@ use zeroize::Zeroizing;
 
 use deobf::core::stub;
 use deobf::{
-    analyze_only, default_protected_output, protect_file, run_embedded_stub, run_protected,
-    unprotect_file, EngineOptions, RuntimeKind,
+    analyze_only, default_protected_output, has_auto_key, protect_file, run_embedded_stub,
+    run_protected, unprotect_file, EngineOptions, RuntimeKind,
 };
 
 #[derive(Parser)]
@@ -107,7 +107,7 @@ fn package_password(input: &std::path::Path, value: Option<String>) -> Result<Ze
         return password(Some(value), false);
     }
     let data = std::fs::read(input).with_context(|| format!("read {}", input.display()))?;
-    if stub::extract_embedded_key(&data).is_some() {
+    if has_auto_key(&data) {
         return Ok(Zeroizing::new(Vec::new()));
     }
     password(None, false)
@@ -161,8 +161,34 @@ fn main() -> Result<ExitCode> {
                 println!(
                     "Runtime: output is a Windows PE stub; double-click it or use `deobf run`."
                 );
+            } else if analysis.kind == "Jar" {
+                if pass.is_empty() {
+                    println!(
+                        "Runtime: output is a self-running JAR. Open it or run `java -jar` (no `deobf run` needed)."
+                    );
+                } else {
+                    println!(
+                        "Runtime: extra-lock JAR is not self-running; use `deobf run <file> jar`."
+                    );
+                }
             } else {
-                println!("Runtime: original extension kept. JAR/Python still launch via `deobf run <file> <jar|python>` (no self-running stub yet).");
+                let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext.eq_ignore_ascii_case("py")
+                    || ext.eq_ignore_ascii_case("pyw")
+                    || ext.eq_ignore_ascii_case("pyz")
+                {
+                    if pass.is_empty() {
+                        println!(
+                            "Runtime: output is a self-running Python file. Open it or run `python` / `py` (no `deobf run` needed)."
+                        );
+                    } else {
+                        println!("Runtime: extra-lock Python is not self-running; use `deobf run <file> python`.");
+                    }
+                } else {
+                    println!(
+                        "Runtime: original extension kept. Launch extra-lock packages with `deobf run`."
+                    );
+                }
             }
         }
         CommandKind::Unprotect {
@@ -191,7 +217,7 @@ fn main() -> Result<ExitCode> {
                 );
                 println!(
                     "unlock: {}",
-                    if stub::extract_embedded_key(&data).is_some() {
+                    if has_auto_key(&data) {
                         "embedded auto-key"
                     } else {
                         "password"
@@ -199,14 +225,22 @@ fn main() -> Result<ExitCode> {
                 );
                 println!("container size: {} bytes", trailer.container_size);
                 println!("file size: {} bytes", data.len());
-            } else if deobf::core::engine::is_deobf_container(&data)
-                || stub::extract_embedded_key(&data).is_some()
-            {
+            } else if deobf::core::selfrun::is_selfrun_jar(&data) {
+                println!("type: DEOBF protected JAR");
+                println!("runtime stub: java loader");
+                println!("unlock: embedded auto-key");
+                println!("size: {} bytes", data.len());
+            } else if deobf::core::selfrun::is_selfrun_python(&data) {
+                println!("type: DEOBF protected Python");
+                println!("runtime stub: python loader");
+                println!("unlock: embedded auto-key");
+                println!("size: {} bytes", data.len());
+            } else if deobf::core::engine::is_deobf_container(&data) || has_auto_key(&data) {
                 println!("type: DEOBF package");
                 println!("runtime stub: absent");
                 println!(
                     "unlock: {}",
-                    if stub::extract_embedded_key(&data).is_some() {
+                    if has_auto_key(&data) {
                         "embedded auto-key"
                     } else {
                         "password"

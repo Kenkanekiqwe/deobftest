@@ -18,6 +18,8 @@ The existing container already provides:
 - Atomic writes through temporary files.
 - Original filename and extension on Protect output (`.exe` stays `.exe`).
 - PE outputs wrapped as a launchable Windows loader stub plus authenticated overlay.
+- JAR auto-key output is a valid ZIP/JAR (`java -jar` / double-click) with a vendored `deobf.Loader`.
+- Python auto-key output is a valid `.py` (or `.pyz` zipapp) that decrypts and execs the original with no extra packages.
 - Backward-compatible reading of legacy passworded `.deobf` packages when a password is supplied.
 
 ## V3 architecture
@@ -88,7 +90,7 @@ deobf inspect <input>
 deobf run <package> <pe|jar|python>
 ```
 
-`deobf protect input.exe` (no `-p` / `--password`) is the default: it writes `protected/input.exe` with an embedded auto-key. Double-click the output and it decrypts via the existing AEAD runtime, launches the original, then cleans up. JAR and Python keep `.jar` / `.py` and use the same no-password default; they still launch through `deobf run` until a self-running stub exists for those formats.
+`deobf protect input.exe` (no `-p` / `--password`) is the default: it writes `protected/input.exe` with an embedded auto-key. Double-click the output and it decrypts via the existing AEAD runtime, launches the original, then cleans up. `deobf protect app.jar` writes a self-running `protected/app.jar` (`java -jar`). `deobf protect app.py` writes a self-running `protected/app.py` (`python` / `py`). Optional `--password` extra-lock for JAR/Python still uses the authenticated container and `deobf run`.
 
 `--password` is an optional extra lock. Legacy passworded `.deobf` files and extra-lock stubs still unprotect when a password is supplied (`--password` or a prompt). Auto-keyed files restore without prompting.
 

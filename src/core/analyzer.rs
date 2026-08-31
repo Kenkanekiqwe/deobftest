@@ -32,11 +32,19 @@ pub fn analyze(data: &[u8]) -> Result<Analysis> {
         _ => Architecture::Unknown,
     };
 
-    let executable = matches!(kind, ArtifactKind::Pe | ArtifactKind::Elf | ArtifactKind::MachO);
+    let executable = matches!(
+        kind,
+        ArtifactKind::Pe | ArtifactKind::Elf | ArtifactKind::MachO
+    );
     let has_archive_signature = data.windows(4).any(|w| w == b"PK\x03\x04");
-    let has_debug_markers = [b".debug_info".as_slice(), b".debug_line", b"RSDS", b"CodeView"]
-        .iter()
-        .any(|needle| data.windows(needle.len()).any(|w| w == *needle));
+    let has_debug_markers = [
+        b".debug_info".as_slice(),
+        b".debug_line",
+        b"RSDS",
+        b"CodeView",
+    ]
+    .iter()
+    .any(|needle| data.windows(needle.len()).any(|w| w == *needle));
 
     Ok(Analysis {
         kind,
@@ -52,7 +60,10 @@ fn pe_architecture(data: &[u8]) -> Architecture {
         return Architecture::Unknown;
     }
     let pe_offset = u32::from_le_bytes(data[0x3c..0x40].try_into().unwrap()) as usize;
-    if pe_offset.checked_add(6).is_none() || data.len() < pe_offset + 6 || &data[pe_offset..pe_offset + 4] != b"PE\0\0" {
+    if pe_offset.checked_add(6).is_none()
+        || data.len() < pe_offset + 6
+        || &data[pe_offset..pe_offset + 4] != b"PE\0\0"
+    {
         return Architecture::Unknown;
     }
     match u16::from_le_bytes(data[pe_offset + 4..pe_offset + 6].try_into().unwrap()) {

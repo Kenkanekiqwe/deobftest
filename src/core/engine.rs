@@ -17,6 +17,7 @@ use std::{
 use super::artifact::ArtifactKind;
 use super::backends::{backend_for, BackendReport};
 use super::pipeline::Pipeline;
+use super::selfrun;
 use super::stub::{self, KIND_JAR, KIND_PE, KIND_PYTHON};
 use super::validation::validate;
 use super::{analyze, Analysis, CapabilityGuard, IntegrityGuard, ProtectionProfile, SizeInvariant};
@@ -182,6 +183,42 @@ fn stub_kind_for(input: &Path, analysis_kind: &str) -> u8 {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WrapKind {
+    Pe,
+    Jar,
+    Python,
+    PythonZipapp,
+    Container,
+}
+
+fn wrap_kind(input: &Path, zipapp: bool, analysis_kind: &str) -> WrapKind {
+    match analysis_kind {
+        "Pe" => WrapKind::Pe,
+        "Jar" => WrapKind::Jar,
+        _ => {
+            let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext.eq_ignore_ascii_case("jar") {
+                WrapKind::Jar
+            } else if ext.eq_ignore_ascii_case("py") || ext.eq_ignore_ascii_case("pyw") {
+                WrapKind::Python
+            } else if ext.eq_ignore_ascii_case("pyz") || ext.eq_ignore_ascii_case("pyzw") {
+                WrapKind::PythonZipapp
+            } else if zipapp {
+                WrapKind::PythonZipapp
+            } else {
+                WrapKind::Container
+            }
+        }
+    }
+}
+
+/// True when the file carries an embedded auto-key (PE overlay, trailing
+/// DEOBFK01, or a self-running JAR/Python wrapper).
+pub fn has_auto_key(data: &[u8]) -> bool {
+    stub::extract_embedded_key(data).is_some() || selfrun::embedded_key(data).is_some()
 }
 
 pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, EngineResult)> {
@@ -464,49 +501,75 @@ pub fn protect_file(
         bail!("password must contain at least {MIN_PASSWORD_LEN} characters");
     }
     let data = fs::read(input).with_context(|| format!("read {}", input.display()))?;
+    let zipapp = selfrun::looks_like_zipapp(&data);
     let (payload, mut report) = protect(data, options)?;
+    let kind = wrap_kind(input, zipapp, &report.analysis.kind);
     let mut raw_key = [0u8; 32];
-    let (container, embedded_key) = if auto_key {
+    if auto_key {
         OsRng.fill_bytes(&mut raw_key);
-        let container = encrypt_container(&payload, Unlock::RawKey(&raw_key))?;
         report.passes.push("runtime:embedded-auto-key".into());
-        (container, Some(raw_key))
-    } else {
-        (encrypt_container(&payload, Unlock::Password(pass))?, None)
-    };
-    let (out_bytes, wrapped) = if report.analysis.kind == "Pe" {
-        let stub = stub::load_stub_or_fallback();
-        let wrapped = stub::wrap_stub(
-            &stub,
-            &container,
-            stub_kind_for(input, &report.analysis.kind),
-            embedded_key.as_ref(),
-        )
-        .context("wrap Windows runtime stub")?;
-        report.passes.push("runtime:windows-stub".into());
-        if stub::parse_trailer(&stub).is_none() && stub.len() < 4096 {
-            report.passes.push("runtime:fallback-pe".into());
+    }
+    let (out_bytes, wrapped) = match (auto_key, kind) {
+        (_, WrapKind::Pe) => {
+            let container = if auto_key {
+                encrypt_container(&payload, Unlock::RawKey(&raw_key))?
+            } else {
+                encrypt_container(&payload, Unlock::Password(pass))?
+            };
+            let stub_bytes = stub::load_stub_or_fallback();
+            let wrapped = stub::wrap_stub(
+                &stub_bytes,
+                &container,
+                stub_kind_for(input, &report.analysis.kind),
+                auto_key.then_some(&raw_key),
+            )
+            .context("wrap Windows runtime stub")?;
+            report.passes.push("runtime:windows-stub".into());
+            if stub::parse_trailer(&stub_bytes).is_none() && stub_bytes.len() < 4096 {
+                report.passes.push("runtime:fallback-pe".into());
+            }
+            (wrapped, true)
         }
-        (wrapped, true)
-    } else if let Some(key) = embedded_key {
-        let mut out = container;
-        out.extend_from_slice(&stub::encode_key_record(&key));
-        (out, false)
-    } else {
-        (container, false)
+        (true, WrapKind::Jar) => {
+            let bytes = selfrun::wrap_jar(&payload, &raw_key).context("build self-running JAR")?;
+            report.passes.push("runtime:jar-loader".into());
+            (bytes, true)
+        }
+        (true, WrapKind::Python) => {
+            let bytes = selfrun::wrap_python(&payload, &raw_key, false)
+                .context("build self-running Python stub")?;
+            report.passes.push("runtime:python-loader".into());
+            (bytes, true)
+        }
+        (true, WrapKind::PythonZipapp) => {
+            let bytes = selfrun::wrap_python(&payload, &raw_key, true)
+                .context("build self-running Python zipapp")?;
+            report.passes.push("runtime:python-loader".into());
+            (bytes, true)
+        }
+        (true, WrapKind::Container) => {
+            let mut out = encrypt_container(&payload, Unlock::RawKey(&raw_key))?;
+            out.extend_from_slice(&stub::encode_key_record(&raw_key));
+            (out, false)
+        }
+        (false, _) => {
+            // Extra password lock: authenticated v2 container. JAR/Python are
+            // not self-running in this mode; use `deobf run` / Studio Runtime.
+            (encrypt_container(&payload, Unlock::Password(pass))?, false)
+        }
     };
     atomic_write(output, &out_bytes)?;
     report.output_size = fs::metadata(output)?.len();
     report.output_hash = digest(&fs::read(output)?);
     report.compatibility_mode = false;
-    // The inner payload is still an encrypted container. PE outputs are a
-    // launchable Windows image (stub + overlay); other formats keep the
-    // original caller-chosen extension but are not self-unpacking stubs yet.
     report.format_preserved = wrapped;
     Ok(report)
 }
 
 pub fn unprotect_bytes(input: &[u8], pass: &[u8]) -> Result<Vec<u8>> {
+    if let Some(plain) = selfrun::try_unwrap(input)? {
+        return Ok(plain);
+    }
     let package = package_bytes(input)?;
     if let Some(key) = stub::extract_embedded_key(input) {
         match decrypt_container(package, Unlock::RawKey(&key)) {

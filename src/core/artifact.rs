@@ -38,7 +38,11 @@ pub fn inspect(data: &[u8]) -> Result<ArtifactInfo> {
     let kind = detect(data);
     let mut hasher = blake3::Hasher::new();
     hasher.update(data);
-    Ok(ArtifactInfo { kind, size: data.len() as u64, digest: *hasher.finalize().as_bytes() })
+    Ok(ArtifactInfo {
+        kind,
+        size: data.len() as u64,
+        digest: *hasher.finalize().as_bytes(),
+    })
 }
 
 pub fn detect(data: &[u8]) -> ArtifactKind {
@@ -50,7 +54,10 @@ pub fn detect(data: &[u8]) -> ArtifactKind {
     }
     if data.len() >= 4 {
         let magic = &data[..4];
-        if matches!(magic, b"\xfe\xed\xfa\xce" | b"\xce\xfa\xed\xfe" | b"\xfe\xed\xfa\xcf" | b"\xcf\xfa\xed\xfe") {
+        if matches!(
+            magic,
+            b"\xfe\xed\xfa\xce" | b"\xce\xfa\xed\xfe" | b"\xfe\xed\xfa\xcf" | b"\xcf\xfa\xed\xfe"
+        ) {
             return ArtifactKind::MachO;
         }
     }

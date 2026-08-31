@@ -342,10 +342,10 @@ impl App {
         match result {
             Ok(r) => {
                 self.log_line(format!(
-                "Protect complete. {} → {} bytes. Double-click PE output to run (no password).{}",
+                "Protect complete. {} → {} bytes. Double-click / open the output to run (PE, JAR, Python; no password).{}",
                 r.input_size,
                 r.output_size,
-                if pass.is_empty() { "" } else { " Extra password lock is on." }
+                if pass.is_empty() { "" } else { " Extra password lock is on — use Runtime / deobf run for JAR and Python." }
             ))
             }
             Err(e) => self.log_line(format!("Protection failed: {e:#}")),
@@ -610,6 +610,7 @@ impl App {
                     checkbox("Authenticated container (XChaCha20-Poly1305; Argon2id only if extra lock is on)", self.integrity)
                         .on_toggle(Message::IntegrityToggled),
                     checkbox("Windows runtime stub for PE (double-click to run, no password)", true),
+                    checkbox("Self-running JAR / Python loaders (java -jar / python, no password)", true),
                     checkbox("Keep original file extension", true),
                     checkbox("Embed auto-key in overlay (packer-style)", !self.lock_with_password),
                 ]
@@ -644,7 +645,7 @@ impl App {
             ]
             .spacing(16),
             button(text("Run protected")).on_press(Message::Run).style(button::primary),
-            text("PE output produced by Protect already contains a loader stub; double-click the .exe to start it with no prompt. JAR/Python keep their extensions but still use this Runtime page or `deobf run`. Password is only needed for legacy extra-lock packages.")
+            text("PE, JAR, and Python Protect output is self-running with no password. Double-click the file, or run `java -jar` / `python`. This Runtime page still launches extra-lock / legacy packages. Password is only needed for those.")
                 .size(13),
         ]
         .spacing(12)

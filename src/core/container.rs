@@ -26,18 +26,28 @@ pub fn pack<W: Write>(mut out: W, input: &[u8]) -> Result<ContainerInfo> {
     out.write_all(&hash)?;
     out.write_all(input)?;
 
-    Ok(ContainerInfo { version: VERSION, original_size: input.len() as u64, content_hash: hash })
+    Ok(ContainerInfo {
+        version: VERSION,
+        original_size: input.len() as u64,
+        content_hash: hash,
+    })
 }
 
 pub fn unpack<R: Read>(mut input: R) -> Result<(ContainerInfo, Vec<u8>)> {
     let mut magic = [0u8; 8];
-    input.read_exact(&mut magic).context("reading container magic")?;
-    if &magic != MAGIC { bail!("invalid DEOBF container magic") }
+    input
+        .read_exact(&mut magic)
+        .context("reading container magic")?;
+    if &magic != MAGIC {
+        bail!("invalid DEOBF container magic")
+    }
 
     let mut u16buf = [0u8; 2];
     input.read_exact(&mut u16buf)?;
     let version = u16::from_le_bytes(u16buf);
-    if version != VERSION { bail!("unsupported DEOBF container version: {version}") }
+    if version != VERSION {
+        bail!("unsupported DEOBF container version: {version}")
+    }
     input.read_exact(&mut u16buf)?;
 
     let mut u64buf = [0u8; 8];
@@ -48,12 +58,23 @@ pub fn unpack<R: Read>(mut input: R) -> Result<(ContainerInfo, Vec<u8>)> {
 
     let size = usize::try_from(original_size).context("container size does not fit platform")?;
     let mut data = vec![0u8; size];
-    input.read_exact(&mut data).context("reading container payload")?;
+    input
+        .read_exact(&mut data)
+        .context("reading container payload")?;
 
     let mut hasher = Hasher::new();
     hasher.update(b"DEOBF3-CONTENT");
     hasher.update(&data);
-    if hasher.finalize().as_bytes() != &expected { bail!("container integrity check failed") }
+    if hasher.finalize().as_bytes() != &expected {
+        bail!("container integrity check failed")
+    }
 
-    Ok((ContainerInfo { version, original_size, content_hash: expected }, data))
+    Ok((
+        ContainerInfo {
+            version,
+            original_size,
+            content_hash: expected,
+        },
+        data,
+    ))
 }

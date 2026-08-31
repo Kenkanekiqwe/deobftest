@@ -38,7 +38,9 @@ pub struct PythonBackend;
 pub struct GenericBackend;
 
 impl ProtectionBackend for PeBackend {
-    fn kind(&self) -> BackendKind { BackendKind::Pe }
+    fn kind(&self) -> BackendKind {
+        BackendKind::Pe
+    }
 
     fn supports(&self, data: &[u8]) -> bool {
         matches!(detect(data), ArtifactKind::Pe) && parse_pe(data).is_ok()
@@ -46,17 +48,23 @@ impl ProtectionBackend for PeBackend {
 
     fn protect(&self, data: Vec<u8>) -> Result<(Vec<u8>, BackendReport)> {
         let info = parse_pe(&data).context("PE validation failed")?;
-        Ok((data, BackendReport {
-            backend: self.kind(),
-            input_kind: ArtifactKind::Pe,
-            supported: true,
-            transformed: false,
-            verified: true,
-            notes: vec![
-                format!("validated PE: machine=0x{:04x}, sections={}", info.machine, info.sections),
-                "PE bytes are intentionally not rewritten by the compatibility backend".into(),
-            ],
-        }))
+        Ok((
+            data,
+            BackendReport {
+                backend: self.kind(),
+                input_kind: ArtifactKind::Pe,
+                supported: true,
+                transformed: false,
+                verified: true,
+                notes: vec![
+                    format!(
+                        "validated PE: machine=0x{:04x}, sections={}",
+                        info.machine, info.sections
+                    ),
+                    "PE bytes are intentionally not rewritten by the compatibility backend".into(),
+                ],
+            },
+        ))
     }
 
     fn verify(&self, _original: &[u8], protected: &[u8]) -> Result<()> {
@@ -66,7 +74,9 @@ impl ProtectionBackend for PeBackend {
 }
 
 impl ProtectionBackend for JavaBackend {
-    fn kind(&self) -> BackendKind { BackendKind::Java }
+    fn kind(&self) -> BackendKind {
+        BackendKind::Java
+    }
 
     fn supports(&self, data: &[u8]) -> bool {
         matches!(detect(data), ArtifactKind::Jar)
@@ -100,7 +110,9 @@ impl ProtectionBackend for JavaBackend {
 }
 
 impl ProtectionBackend for PythonBackend {
-    fn kind(&self) -> BackendKind { BackendKind::Python }
+    fn kind(&self) -> BackendKind {
+        BackendKind::Python
+    }
 
     fn supports(&self, data: &[u8]) -> bool {
         data.windows(7).any(|w| w == b"import ")
@@ -113,17 +125,20 @@ impl ProtectionBackend for PythonBackend {
             bail!("empty Python artifact")
         }
         let transformed = strip_python_comments(&data)?;
-        Ok((transformed, BackendReport {
-            backend: self.kind(),
-            input_kind: ArtifactKind::Raw,
-            supported: true,
-            transformed: true,
-            verified: true,
-            notes: vec![
-                "removed comments and blank lines while preserving Python tokens".into(),
-                "runtime imports and executable statements are retained".into(),
-            ],
-        }))
+        Ok((
+            transformed,
+            BackendReport {
+                backend: self.kind(),
+                input_kind: ArtifactKind::Raw,
+                supported: true,
+                transformed: true,
+                verified: true,
+                notes: vec![
+                    "removed comments and blank lines while preserving Python tokens".into(),
+                    "runtime imports and executable statements are retained".into(),
+                ],
+            },
+        ))
     }
 
     fn verify(&self, _original: &[u8], protected: &[u8]) -> Result<()> {
@@ -135,18 +150,25 @@ impl ProtectionBackend for PythonBackend {
 }
 
 impl ProtectionBackend for GenericBackend {
-    fn kind(&self) -> BackendKind { BackendKind::Generic }
-    fn supports(&self, _data: &[u8]) -> bool { true }
+    fn kind(&self) -> BackendKind {
+        BackendKind::Generic
+    }
+    fn supports(&self, _data: &[u8]) -> bool {
+        true
+    }
 
     fn protect(&self, data: Vec<u8>) -> Result<(Vec<u8>, BackendReport)> {
-        Ok((data, BackendReport {
-            backend: self.kind(),
-            input_kind: ArtifactKind::Raw,
-            supported: true,
-            transformed: false,
-            verified: true,
-            notes: vec!["generic authenticated packaging; original bytes preserved".into()],
-        }))
+        Ok((
+            data,
+            BackendReport {
+                backend: self.kind(),
+                input_kind: ArtifactKind::Raw,
+                supported: true,
+                transformed: false,
+                verified: true,
+                notes: vec!["generic authenticated packaging; original bytes preserved".into()],
+            },
+        ))
     }
 
     fn verify(&self, original: &[u8], protected: &[u8]) -> Result<()> {
@@ -161,7 +183,9 @@ pub fn backend_for(data: &[u8]) -> Box<dyn ProtectionBackend> {
     match detect(data) {
         ArtifactKind::Pe => Box::new(PeBackend),
         ArtifactKind::Jar => Box::new(JavaBackend),
-        ArtifactKind::Raw | ArtifactKind::Zip | ArtifactKind::Elf | ArtifactKind::MachO => Box::new(GenericBackend),
+        ArtifactKind::Raw | ArtifactKind::Zip | ArtifactKind::Elf | ArtifactKind::MachO => {
+            Box::new(GenericBackend)
+        }
     }
 }
 
@@ -212,7 +236,8 @@ fn transform_jar(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn verify_jar(data: &[u8]) -> Result<()> {
-    let mut archive = ZipArchive::new(Cursor::new(data)).context("protected output is not a valid JAR")?;
+    let mut archive =
+        ZipArchive::new(Cursor::new(data)).context("protected output is not a valid JAR")?;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         if entry.name().ends_with(".class") {
@@ -229,7 +254,10 @@ fn verify_jar(data: &[u8]) -> Result<()> {
 fn is_signature_entry(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     upper.starts_with("META-INF/")
-        && (upper.ends_with(".SF") || upper.ends_with(".RSA") || upper.ends_with(".DSA") || upper.ends_with(".EC"))
+        && (upper.ends_with(".SF")
+            || upper.ends_with(".RSA")
+            || upper.ends_with(".DSA")
+            || upper.ends_with(".EC"))
 }
 
 // JVM class files are length-prefixed structures. Replacing only the UTF-8
@@ -245,25 +273,39 @@ fn transform_class_debug_attributes(data: &[u8]) -> Result<Vec<u8>> {
     let mut index = 1usize;
 
     while index < cp_count {
-        if p >= data.len() { bail!("truncated constant pool") }
+        if p >= data.len() {
+            bail!("truncated constant pool")
+        }
         match data[p] {
             1 => {
-                if p + 3 > data.len() { bail!("truncated UTF-8 constant") }
+                if p + 3 > data.len() {
+                    bail!("truncated UTF-8 constant")
+                }
                 let len = u16::from_be_bytes([data[p + 1], data[p + 2]]) as usize;
                 let start = p + 3;
                 let end = start.checked_add(len).context("class constant overflow")?;
-                if end > data.len() { bail!("truncated UTF-8 constant") }
+                if end > data.len() {
+                    bail!("truncated UTF-8 constant")
+                }
                 let value = &data[start..end];
                 if value == b"SourceFile" || value == b"SourceDebugExtension" {
-                    let replacement: &[u8] = if value == b"SourceFile" { b"XSourceFile" } else { b"XSourceDebugExtension" };
+                    let replacement: &[u8] = if value == b"SourceFile" {
+                        b"XSourceFile"
+                    } else {
+                        b"XSourceDebugExtension"
+                    };
                     // Keep the original constant length so every following offset stays valid.
                     out[start..end].fill(b'_');
-                    out[start..start + replacement.len().min(len)].copy_from_slice(&replacement[..replacement.len().min(len)]);
+                    out[start..start + replacement.len().min(len)]
+                        .copy_from_slice(&replacement[..replacement.len().min(len)]);
                 }
                 p = end;
             }
             3 | 4 => p += 5,
-            5 | 6 => { p += 9; index += 1; }
+            5 | 6 => {
+                p += 9;
+                index += 1;
+            }
             7 | 8 | 16 | 19 | 20 => p += 3,
             9 | 10 | 11 | 12 | 17 | 18 => p += 5,
             15 => p += 4,
@@ -291,8 +333,14 @@ fn strip_python_comments(data: &[u8]) -> Result<Vec<u8>> {
                 escaped = true;
                 continue;
             }
-            if c == '\'' && !in_double { in_single = !in_single; continue; }
-            if c == '"' && !in_single { in_double = !in_double; continue; }
+            if c == '\'' && !in_double {
+                in_single = !in_single;
+                continue;
+            }
+            if c == '"' && !in_single {
+                in_double = !in_double;
+                continue;
+            }
             if c == '#' && !in_single && !in_double {
                 cut = i;
                 break;

@@ -14,9 +14,11 @@ DEOBF is a Windows-first protection system. It separates **at-rest protection** 
 8. Write the package atomically through a temporary file.
 9. **Keep the original filename and extension** (`.exe` stays `.exe`, `.jar` stays `.jar`, `.py` stays `.py`). Default output is `protected/<original-name>` next to the input so the source is never overwritten.
 10. **PE:** wrap the authenticated container in a Windows PE loader stub (overlay + `DEOBFS01` trailer). Double-clicking the output EXE decrypts with the embedded key (no prompt), restores the payload into a private temp directory, launches it, then cleans up. Extra-lock builds still prompt or read `DEOBF_PASSWORD`. The stub is the DEOBF runtime (`deobf-stub` / `deobf` / `deobf-gui`), not a code-virtualization engine, and does not implement process hollowing, anti-debug, or AV/EDR evasion.
-11. **JAR / Python:** the original extension is kept so the file still looks like that type, but a self-running JAR/Python stub is not produced yet. Open/run those outputs from DEOBF Studio (Runtime) or `deobf run`. They use the same no-password default.
-12. Legacy `.deobf` containers remain readable via Restore / `unprotect` when a password is supplied.
-13. Remove the temporary runtime directory after process exit.
+11. **JAR:** auto-key Protect writes a valid ZIP/JAR whose `Main-Class` is a vendored `deobf.Loader`. The loader decrypts a single-shot XChaCha20-Poly1305 envelope (`DEOBFW01`) with an embedded 32-byte key and launches the original JAR via `java -jar` on a temp file, forwarding CLI args. `javac` is not required at protect time.
+12. **Python:** auto-key Protect writes a valid Python 3 file (or a zipapp for `.pyz`) that embeds the same envelope, decrypts in pure Python, and `exec`s the original source. No extra pip packages.
+13. **JAR / Python extra-lock (`--password`):** falls back to the authenticated v2 container (not self-running); use Studio Runtime or `deobf run`.
+14. Legacy `.deobf` containers remain readable via Restore / `unprotect` when a password is supplied.
+15. Remove the temporary runtime directory after process exit.
 
 This is **packaging + authenticated encryption + a Windows loader stub**, not VMProtect-style native virtualization.
 

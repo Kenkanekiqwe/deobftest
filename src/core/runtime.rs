@@ -7,6 +7,7 @@ use std::{
 };
 
 use super::engine::unprotect_file;
+use super::selfrun;
 use super::stub::{self, KIND_JAR, KIND_PE, KIND_PYTHON};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,23 @@ pub fn run_protected(
 ) -> Result<ExitStatus> {
     if !package.is_file() {
         bail!("protected package does not exist: {}", package.display());
+    }
+
+    let bytes = fs::read(package).with_context(|| format!("read {}", package.display()))?;
+    if selfrun::is_selfrun_jar(&bytes) {
+        return Command::new(interpreter.unwrap_or("java"))
+            .arg("-jar")
+            .arg(package)
+            .args(args)
+            .status()
+            .with_context(|| format!("launch self-running JAR {}", package.display()));
+    }
+    if selfrun::is_selfrun_python(&bytes) {
+        return Command::new(interpreter.unwrap_or("python"))
+            .arg(package)
+            .args(args)
+            .status()
+            .with_context(|| format!("launch self-running Python {}", package.display()));
     }
 
     let root = unique_runtime_dir()?;

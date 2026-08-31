@@ -105,6 +105,8 @@ mod tests {
     #[test]
     fn pipeline_rejects_empty_input() {
         let pipeline = Pipeline::new().with(VerifyPass);
-        assert!(pipeline.run(Vec::new(), &ProtectionProfile::safe()).is_err());
+        assert!(pipeline
+            .run(Vec::new(), &ProtectionProfile::safe())
+            .is_err());
     }
 }
