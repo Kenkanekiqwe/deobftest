@@ -16,6 +16,7 @@ rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 zstd = "0.13"
 zeroize = "1"
+zip = "2"
 iced = { version = "0.13", default-features = false, features = ["tiny-skia", "fira-sans", "image", "lazy"] }
 rfd = "0.15"
 
