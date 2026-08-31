@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 fn main() {
     match deobf::run_embedded_stub() {
         Some(Ok(code)) => std::process::exit(code),

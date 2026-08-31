@@ -12,7 +12,14 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
   RUSTFLAGS: "-C target-cpu=x86-64"
+  # CI-only faster release profile. Local Cargo.toml defaults are unchanged.
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
 
 jobs:
   build:
@@ -28,28 +35,41 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: deobf-windows-msvc-release
           cache-on-failure: true
           cache-targets: true
           cache-all-crates: true
 
-      # Intentionally build-only: no test suite or fmt gate is required for
-      # the release artifact. Cargo may update Cargo.lock when dependencies
-      # changed, avoiding the --locked failure seen in CI.
-      - name: Build release binaries
-        run: cargo build --release --target x86_64-pc-windows-msvc --bin deobf --bin deobf-gui --bin deobf-stub
+      # Ordinary pushes skip iced/GUI. First-run still compiles CLI crates;
+      # later pushes should hit rust-cache + sccache. GUI (iced) is the compile
+      # hog and is built only on tags and manual workflow_dispatch.
+      - name: Build CLI and stub
+        run: cargo build --release --no-default-features --target x86_64-pc-windows-msvc --bin deobf --bin deobf-stub
+
+      - name: Build GUI
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        run: cargo build --release --features gui --target x86_64-pc-windows-msvc --bin deobf-gui
 
       - name: Package
         shell: pwsh
         run: |
+          $out = "target/x86_64-pc-windows-msvc/release"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "target/x86_64-pc-windows-msvc/release/deobf.exe" "dist/deobf.exe"
-          Copy-Item "target/x86_64-pc-windows-msvc/release/deobf-gui.exe" "dist/deobf-gui.exe"
-          Copy-Item "target/x86_64-pc-windows-msvc/release/deobf-stub.exe" "dist/deobf-stub.exe"
-          Compress-Archive -Path "dist/deobf.exe", "dist/deobf-gui.exe", "dist/deobf-stub.exe" -DestinationPath "dist/deobf-windows-x64.zip" -Force
-          Get-FileHash "dist/deobf.exe", "dist/deobf-gui.exe", "dist/deobf-stub.exe", "dist/deobf-windows-x64.zip" -Algorithm SHA256 |
+          Copy-Item "$out/deobf.exe" "dist/deobf.exe"
+          Copy-Item "$out/deobf-stub.exe" "dist/deobf-stub.exe"
+          $files = @("dist/deobf.exe", "dist/deobf-stub.exe")
+          if (Test-Path "$out/deobf-gui.exe") {
+            Copy-Item "$out/deobf-gui.exe" "dist/deobf-gui.exe"
+            $files += "dist/deobf-gui.exe"
+          }
+          Compress-Archive -Path $files -DestinationPath "dist/deobf-windows-x64.zip" -Force
+          Get-FileHash ($files + "dist/deobf-windows-x64.zip") -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } |
             Set-Content "dist/SHA256SUMS.txt"
 

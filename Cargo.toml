@@ -5,6 +5,10 @@ edition = "2021"
 description = "Windows software protection and authenticated runtime packaging toolkit"
 license = "MIT"
 
+[features]
+default = ["gui"]
+gui = ["dep:iced", "dep:rfd"]
+
 [dependencies]
 anyhow = "1"
 argon2 = "0.5"
@@ -17,14 +21,19 @@ serde = { version = "1", features = ["derive"] }
 zstd = "0.13"
 zeroize = "1"
 zip = "2"
-iced = { version = "0.13", default-features = false, features = ["tiny-skia", "fira-sans", "image", "lazy"] }
-rfd = "0.15"
+iced = { version = "0.13", default-features = false, features = ["tiny-skia", "fira-sans", "image", "lazy"], optional = true }
+rfd = { version = "0.15", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Diagnostics_Debug", "Win32_System_Console"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "deobf-gui"
+path = "src/bin/deobf-gui.rs"
+required-features = ["gui"]
 
 [profile.dev]
 opt-level = 0

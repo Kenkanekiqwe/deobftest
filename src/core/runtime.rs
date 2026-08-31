@@ -1,6 +1,10 @@
 use anyhow::{bail, Context, Result};
 use rand::{rngs::OsRng, RngCore};
-use std::{fs, path::{Path, PathBuf}, process::{Command, ExitStatus}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, ExitStatus},
+};
 
 use super::engine::unprotect_file;
 use super::stub::{self, KIND_JAR, KIND_PE, KIND_PYTHON};
@@ -34,6 +38,8 @@ impl RuntimeKind {
 /// Restores a protected package into a unique temporary directory, executes it,
 /// and removes the temporary payload afterwards. The package itself remains
 /// encrypted at rest; the original artifact is never rewritten in-place.
+///
+/// `pass` may be empty when the package carries an embedded auto-key.
 pub fn run_protected(
     package: &Path,
     pass: &[u8],
@@ -43,9 +49,6 @@ pub fn run_protected(
 ) -> Result<ExitStatus> {
     if !package.is_file() {
         bail!("protected package does not exist: {}", package.display());
-    }
-    if pass.is_empty() {
-        bail!("password must not be empty");
     }
 
     let root = unique_runtime_dir()?;
@@ -88,7 +91,8 @@ pub fn run_protected(
     let cleanup = fs::remove_dir_all(&root);
     if let Err(error) = cleanup {
         if result.is_ok() {
-            return Err(error).with_context(|| format!("cleanup runtime directory {}", root.display()));
+            return Err(error)
+                .with_context(|| format!("cleanup runtime directory {}", root.display()));
         }
     }
 
@@ -102,25 +106,41 @@ pub fn run_embedded_stub() -> Option<Result<i32>> {
     let bytes = fs::read(&exe).ok()?;
     let (container, kind_u8) = stub::extract(&bytes)?;
     let kind = RuntimeKind::from_stub_kind(kind_u8)?;
-    Some(run_embedded_container(&container, kind))
+    Some(run_embedded_container(&bytes, &container, kind))
 }
 
-fn run_embedded_container(container: &[u8], kind: RuntimeKind) -> Result<i32> {
-    #[cfg(windows)]
-    ensure_console();
+fn run_embedded_container(file: &[u8], container: &[u8], kind: RuntimeKind) -> Result<i32> {
+    let embedded_key = stub::extract_embedded_key(file);
+    let pass = if embedded_key.is_some() {
+        Vec::new()
+    } else {
+        if std::env::var_os("DEOBF_PASSWORD").is_none() {
+            #[cfg(windows)]
+            ensure_console();
+        }
+        stub_password()?
+    };
 
-    let pass = stub_password()?;
     let root = unique_runtime_dir()?;
     create_private_dir(&root).context("create stub runtime directory")?;
     let package = root.join("package.deobf");
     let result = (|| -> Result<i32> {
-        fs::write(&package, container).with_context(|| format!("write {}", package.display()))?;
+        let mut package_bytes = container.to_vec();
+        if let Some(key) = embedded_key {
+            package_bytes.extend_from_slice(&stub::encode_key_record(&key));
+        }
+        fs::write(&package, &package_bytes)
+            .with_context(|| format!("write {}", package.display()))?;
         let args: Vec<String> = std::env::args().skip(1).collect();
         let status = run_protected(&package, &pass, kind, None, &args)?;
         Ok(status.code().unwrap_or(1))
     })();
     let _ = fs::remove_file(&package);
     let _ = fs::remove_dir_all(&root);
+    if result.is_err() {
+        #[cfg(windows)]
+        ensure_console();
+    }
     result.context("launch embedded protected payload")
 }
 

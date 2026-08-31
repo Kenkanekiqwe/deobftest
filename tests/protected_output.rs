@@ -46,12 +46,47 @@ fn protect_pe_writes_exe_not_deobf() {
     assert!(output.exists(), "expected {}", output.display());
     assert_eq!(output.extension().and_then(|e| e.to_str()), Some("exe"));
     let bytes = fs::read(&output).unwrap();
-    assert!(bytes.starts_with(b"MZ"), "protected PE must remain a PE image");
-    assert!(stub::parse_trailer(&bytes).is_some(), "protected PE must carry a DEOBF overlay");
+    assert!(
+        bytes.starts_with(b"MZ"),
+        "protected PE must remain a PE image"
+    );
+    assert!(
+        stub::parse_trailer(&bytes).is_some(),
+        "protected PE must carry a DEOBF overlay"
+    );
     assert!(report.passes.iter().any(|p| p.contains("windows-stub")));
+    assert!(
+        stub::extract_embedded_key(&bytes).is_none(),
+        "passworded extra-lock must not embed a raw key"
+    );
 
     let restored = dir.path().join("restored.exe");
     unprotect_file(&output, &restored, password()).unwrap();
+    assert_eq!(fs::read(restored).unwrap(), sample_pe());
+}
+
+#[test]
+fn protect_pe_auto_key_needs_no_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("foo.exe");
+    let output = dir.path().join("protected").join("foo.exe");
+    fs::write(&input, sample_pe()).unwrap();
+
+    let report = protect_file(&input, &output, b"", &EngineOptions::default()).unwrap();
+    let bytes = fs::read(&output).unwrap();
+    assert!(bytes.starts_with(b"MZ"));
+    assert!(stub::parse_trailer(&bytes).is_some());
+    assert!(
+        stub::extract_embedded_key(&bytes).is_some(),
+        "auto-key must be embedded next to the container"
+    );
+    assert!(report
+        .passes
+        .iter()
+        .any(|p| p.contains("embedded-auto-key")));
+
+    let restored = dir.path().join("restored.exe");
+    unprotect_file(&output, &restored, b"").unwrap();
     assert_eq!(fs::read(restored).unwrap(), sample_pe());
 }
 
@@ -65,6 +100,20 @@ fn protect_python_keeps_py_extension() {
     assert_eq!(output.extension().and_then(|e| e.to_str()), Some("py"));
     let restored = dir.path().join("out.py");
     unprotect_file(&output, &restored, password()).unwrap();
+    assert_eq!(fs::read(restored).unwrap(), b"print('hello from deobf')\n");
+}
+
+#[test]
+fn protect_python_auto_key_unprotects_without_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("app.py");
+    let output = dir.path().join("protected").join("app.py");
+    fs::write(&input, b"print('hello from deobf')\n").unwrap();
+    protect_file(&input, &output, b"", &EngineOptions::default()).unwrap();
+    let bytes = fs::read(&output).unwrap();
+    assert!(stub::extract_embedded_key(&bytes).is_some());
+    let restored = dir.path().join("out.py");
+    unprotect_file(&output, &restored, b"").unwrap();
     assert_eq!(fs::read(restored).unwrap(), b"print('hello from deobf')\n");
 }
 
@@ -87,7 +136,11 @@ fn legacy_deobf_package_still_unprotects() {
         ])
         .output()
         .unwrap();
-    assert!(result.status.success(), "protect failed: {}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "protect failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let result = Command::new(exe)
         .args([
             "unprotect",
@@ -99,7 +152,11 @@ fn legacy_deobf_package_still_unprotects() {
         ])
         .output()
         .unwrap();
-    assert!(result.status.success(), "unprotect failed: {}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "unprotect failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(fs::read(output).unwrap(), b"legacy-container-bytes");
 }
 
@@ -141,8 +198,63 @@ fn cli_protect_pe_without_dash_o_writes_protected_foo_exe() {
 }
 
 #[test]
+fn cli_protect_without_password_embeds_auto_key() {
+    let exe = env!("CARGO_BIN_EXE_deobf");
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("foo.exe");
+    fs::write(&input, sample_pe()).unwrap();
+    let stub_path = write_stub_file(dir.path());
+    let result = Command::new(exe)
+        .args(["protect", input.to_str().unwrap()])
+        .env("DEOBF_STUB_PATH", &stub_path)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "protect without --password failed: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        result.status,
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let output = dir.path().join("protected").join("foo.exe");
+    let bytes = fs::read(&output).unwrap();
+    assert!(bytes.starts_with(b"MZ"));
+    assert!(stub::extract_embedded_key(&bytes).is_some());
+    assert!(String::from_utf8_lossy(&result.stdout).contains("embedded auto-key"));
+
+    let restored = dir.path().join("restored.exe");
+    let result = Command::new(exe)
+        .args([
+            "unprotect",
+            output.to_str().unwrap(),
+            "-o",
+            restored.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "unprotect without --password failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(fs::read(restored).unwrap(), sample_pe());
+}
+
+#[test]
 fn fallback_pe_is_parseable() {
     let pe = stub::fallback_pe_stub();
     let info = deobf::core::parse_pe(&pe).expect("fallback stub must be a valid PE");
     assert_eq!(info.machine, 0x8664);
+}
+
+#[test]
+fn passworded_package_does_not_unprotect_without_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("notes.txt");
+    let packaged = dir.path().join("notes.deobf");
+    fs::write(&input, b"secret").unwrap();
+    protect_file(&input, &packaged, password(), &EngineOptions::default()).unwrap();
+    let restored = dir.path().join("out.txt");
+    let err = unprotect_file(&packaged, &restored, b"").unwrap_err();
+    assert!(format!("{err:#}").contains("password"));
 }

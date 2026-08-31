@@ -8,7 +8,8 @@ The project is being rebuilt around a strict separation between **format adapter
 
 The existing container already provides:
 
-- Argon2id password-based key derivation with a per-container random salt.
+- Packer-style default: a random 32-byte AEAD key is generated at protect time and embedded next to the container. Double-clicking a protected PE runs with no password prompt.
+- Optional extra password lock (`--password` / GUI checkbox, off by default) using Argon2id.
 - XChaCha20-Poly1305 authenticated encryption.
 - Per-chunk nonces and authenticated metadata (AAD).
 - Streaming processing for large files.
@@ -17,7 +18,7 @@ The existing container already provides:
 - Atomic writes through temporary files.
 - Original filename and extension on Protect output (`.exe` stays `.exe`).
 - PE outputs wrapped as a launchable Windows loader stub plus authenticated overlay.
-- Backward-compatible reading of legacy `.deobf` packages.
+- Backward-compatible reading of legacy passworded `.deobf` packages when a password is supplied.
 
 ## V3 architecture
 
@@ -87,9 +88,9 @@ deobf inspect <input>
 deobf run <package> <pe|jar|python>
 ```
 
-If `-o` is omitted, Protect writes `protected/<original-filename>` next to the input, keeping the original extension. PE files become a stub-wrapped EXE that prompts for the password and launches the payload. JAR and Python keep `.jar` / `.py` but are not self-running stubs yet (`deobf run`).
+`deobf protect input.exe` (no `-p` / `--password`) is the default: it writes `protected/input.exe` with an embedded auto-key. Double-click the output and it decrypts via the existing AEAD runtime, launches the original, then cleans up. JAR and Python keep `.jar` / `.py` and use the same no-password default; they still launch through `deobf run` until a self-running stub exists for those formats.
 
-Passwords may be supplied interactively; command-line password arguments remain available for automation but are less desirable because process arguments can be observable by other local software. The PE stub also reads `DEOBF_PASSWORD`.
+`--password` is an optional extra lock. Legacy passworded `.deobf` files and extra-lock stubs still unprotect when a password is supplied (`--password` or a prompt). Auto-keyed files restore without prompting.
 
 ## Development
 
@@ -99,3 +100,5 @@ cargo test --all-targets --locked
 cargo clippy --all-targets --locked -- -D warnings
 cargo build --release --locked
 ```
+
+GitHub Actions on ordinary `main` pushes builds `deobf` and `deobf-stub` only (`--no-default-features`) with rust-cache + sccache and a faster CI release profile. The Iced GUI is compiled on tags and `workflow_dispatch`. The first CI run still compiles from a cold cache; later pushes should be much faster. Local `cargo build --release` still includes the GUI (default `gui` feature).

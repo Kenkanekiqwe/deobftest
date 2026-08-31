@@ -149,6 +149,7 @@ struct App {
     input: String,
     output: String,
     password: String,
+    lock_with_password: bool,
     profile: Profile,
     run_as: RunAs,
     interpreter: String,
@@ -166,13 +167,16 @@ impl Default for App {
             input: String::new(),
             output: String::new(),
             password: String::new(),
+            lock_with_password: false,
             profile: Profile::Balanced,
             run_as: RunAs::Pe,
             interpreter: String::new(),
             verify: true,
             integrity: true,
             analysis: String::new(),
-            log: vec!["DEOBF Protection Studio ready.".into()],
+            log: vec![
+                "DEOBF Protection Studio ready. Protect is one click; no password required.".into(),
+            ],
             busy: false,
         }
     }
@@ -186,6 +190,7 @@ enum Message {
     InputChanged(String),
     OutputChanged(String),
     PasswordChanged(String),
+    LockToggled(bool),
     ProfileChanged(Profile),
     RunAsChanged(RunAs),
     InterpreterChanged(String),
@@ -218,7 +223,8 @@ impl App {
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                         self.run_as = if ext.eq_ignore_ascii_case("jar") {
                             RunAs::Jar
-                        } else if ext.eq_ignore_ascii_case("py") || ext.eq_ignore_ascii_case("pyc") {
+                        } else if ext.eq_ignore_ascii_case("py") || ext.eq_ignore_ascii_case("pyc")
+                        {
                             RunAs::Python
                         } else {
                             RunAs::Pe
@@ -237,6 +243,14 @@ impl App {
             Message::InputChanged(v) => self.input = v,
             Message::OutputChanged(v) => self.output = v,
             Message::PasswordChanged(v) => self.password = v,
+            Message::LockToggled(v) => {
+                self.lock_with_password = v;
+                self.log_line(if v {
+                    "Extra password lock enabled (optional)."
+                } else {
+                    "Extra password lock off — packer-style auto-run."
+                });
+            }
             Message::ProfileChanged(v) => {
                 self.profile = v;
                 self.log_line(format!("Profile: {}", v.name()));
@@ -265,7 +279,11 @@ impl App {
             Ok(a) => {
                 self.analysis = format!(
                     "Type: {}\nArchitecture: {}\nExecutable: {}\nDebug markers: {}\nArchive: {}",
-                    a.kind, a.architecture, a.executable, a.has_debug_markers, a.has_archive_signature
+                    a.kind,
+                    a.architecture,
+                    a.executable,
+                    a.has_debug_markers,
+                    a.has_archive_signature
                 );
                 self.log_line(format!("Analyzed {} ({})", self.input, a.kind));
             }
@@ -276,21 +294,45 @@ impl App {
         }
     }
 
-    fn protect(&mut self) {
-        if self.password.len() < 12 {
-            self.log_line("Password must contain at least 12 characters.");
-            return;
+    fn protect_pass(&self) -> Result<&[u8], &'static str> {
+        if self.lock_with_password {
+            if self.password.len() < 12 {
+                return Err(
+                    "Extra password lock is on: password must contain at least 12 characters.",
+                );
+            }
+            Ok(self.password.as_bytes())
+        } else {
+            Ok(b"")
         }
+    }
+
+    fn restore_pass(&self) -> &[u8] {
+        if self.password.len() >= 12 {
+            self.password.as_bytes()
+        } else {
+            b""
+        }
+    }
+
+    fn protect(&mut self) {
         if self.input.is_empty() || self.output.is_empty() {
             self.log_line("Choose input and output paths.");
             return;
         }
+        let pass = match self.protect_pass() {
+            Ok(pass) => pass.to_vec(),
+            Err(msg) => {
+                self.log_line(msg);
+                return;
+            }
+        };
         self.busy = true;
         self.log_line(format!("Protecting {} → {}", self.input, self.output));
         let result = protect_file(
             &PathBuf::from(&self.input),
             &PathBuf::from(&self.output),
-            self.password.as_bytes(),
+            &pass,
             &EngineOptions {
                 profile: self.profile.engine().into(),
                 verify: self.verify,
@@ -298,20 +340,20 @@ impl App {
             },
         );
         match result {
-            Ok(r) => self.log_line(format!(
-                "Protect complete. {} → {} bytes. Original extension kept. PE files include a Windows loader stub.",
-                r.input_size, r.output_size
-            )),
+            Ok(r) => {
+                self.log_line(format!(
+                "Protect complete. {} → {} bytes. Double-click PE output to run (no password).{}",
+                r.input_size,
+                r.output_size,
+                if pass.is_empty() { "" } else { " Extra password lock is on." }
+            ))
+            }
             Err(e) => self.log_line(format!("Protection failed: {e:#}")),
         }
         self.busy = false;
     }
 
     fn restore(&mut self) {
-        if self.password.len() < 12 {
-            self.log_line("Password must contain at least 12 characters.");
-            return;
-        }
         if self.input.is_empty() || self.output.is_empty() {
             self.log_line("Choose package and restore output.");
             return;
@@ -322,7 +364,7 @@ impl App {
             match unprotect_file(
                 &PathBuf::from(&self.input),
                 &PathBuf::from(&self.output),
-                self.password.as_bytes(),
+                self.restore_pass(),
             ) {
                 Ok(()) => "Authenticated payload restored.".into(),
                 Err(e) => format!("Restore failed: {e:#}"),
@@ -332,10 +374,6 @@ impl App {
     }
 
     fn run(&mut self) {
-        if self.password.len() < 12 {
-            self.log_line("Password must contain at least 12 characters.");
-            return;
-        }
         if self.input.is_empty() {
             self.log_line("Choose a protected file to run.");
             return;
@@ -348,7 +386,7 @@ impl App {
         };
         let result = run_protected(
             &PathBuf::from(&self.input),
-            self.password.as_bytes(),
+            self.restore_pass(),
             self.run_as.kind(),
             interpreter,
             &[],
@@ -365,7 +403,7 @@ impl App {
         let header = row![
             column![
                 text("Project workspace").size(22),
-                text("Protect software you own. Output keeps the original extension.").size(13),
+                text("Protect software you own. Output keeps the original extension. No password by default.").size(13),
             ]
             .spacing(4)
             .width(Length::Fill),
@@ -412,12 +450,17 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        row![sidebar, main].width(Length::Fill).height(Length::Fill).into()
+        row![sidebar, main]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
         let brand = row![
-            container(text("D").size(20)).padding(8).style(|_t| panel_style(Color::from_rgb8(47, 129, 247))),
+            container(text("D").size(20))
+                .padding(8)
+                .style(|_t| panel_style(Color::from_rgb8(47, 129, 247))),
             column![text("DEOBF").size(22), text("Protection Studio").size(12)].spacing(0),
         ]
         .spacing(10)
@@ -468,12 +511,29 @@ impl App {
 
     fn file_fields(&self) -> Element<'_, Message> {
         column![
-            labeled_input("Input file", &self.input, "Browse", Message::InputChanged, Message::PickInput),
-            labeled_input("Output file", &self.output, "Save as", Message::OutputChanged, Message::PickOutput),
+            labeled_input(
+                "Input file",
+                &self.input,
+                "Browse",
+                Message::InputChanged,
+                Message::PickInput
+            ),
+            labeled_input(
+                "Output file",
+                &self.output,
+                "Save as",
+                Message::OutputChanged,
+                Message::PickOutput
+            ),
+            checkbox(
+                "Optional extra password lock (off by default)",
+                self.lock_with_password
+            )
+            .on_toggle(Message::LockToggled),
             row![
                 column![
-                    text("Password").size(13),
-                    text_input("Minimum 12 characters", &self.password)
+                    text("Password (only if extra lock is on, or for legacy restore)").size(13),
+                    text_input("Leave empty for auto-run", &self.password)
                         .secure(true)
                         .on_input(Message::PasswordChanged),
                 ]
@@ -481,7 +541,12 @@ impl App {
                 .width(Length::Fill),
                 column![
                     text("Profile").size(13),
-                    pick_list(&Profile::ALL[..], Some(self.profile), Message::ProfileChanged).width(Length::Fill),
+                    pick_list(
+                        &Profile::ALL[..],
+                        Some(self.profile),
+                        Message::ProfileChanged
+                    )
+                    .width(Length::Fill),
                 ]
                 .spacing(6)
                 .width(Length::FillPortion(1)),
@@ -512,8 +577,12 @@ impl App {
         column![
             self.file_fields(),
             row![
-                button(text("Analyze")).on_press(Message::Analyze).style(button::secondary),
-                button(text("Protect")).on_press(Message::Protect).style(button::success),
+                button(text("Analyze"))
+                    .on_press(Message::Analyze)
+                    .style(button::secondary),
+                button(text("Protect"))
+                    .on_press(Message::Protect)
+                    .style(button::success),
             ]
             .spacing(10),
             analysis,
@@ -538,10 +607,11 @@ impl App {
                     checkbox("Integrity / anti-tamper digest", caps.anti_tamper),
                     Space::with_height(10.0),
                     checkbox("Verify after protect", self.verify).on_toggle(Message::VerifyToggled),
-                    checkbox("Authenticated container (Argon2id + XChaCha20-Poly1305)", self.integrity)
+                    checkbox("Authenticated container (XChaCha20-Poly1305; Argon2id only if extra lock is on)", self.integrity)
                         .on_toggle(Message::IntegrityToggled),
-                    checkbox("Windows runtime stub for PE (double-click to run)", true),
+                    checkbox("Windows runtime stub for PE (double-click to run, no password)", true),
                     checkbox("Keep original file extension", true),
+                    checkbox("Embed auto-key in overlay (packer-style)", !self.lock_with_password),
                 ]
                 .spacing(10),
             )
@@ -574,7 +644,7 @@ impl App {
             ]
             .spacing(16),
             button(text("Run protected")).on_press(Message::Run).style(button::primary),
-            text("PE output produced by Protect already contains a loader stub; double-click the .exe to start it (password prompt). JAR/Python keep their extensions but still use this Runtime page or `deobf run`.")
+            text("PE output produced by Protect already contains a loader stub; double-click the .exe to start it with no prompt. JAR/Python keep their extensions but still use this Runtime page or `deobf run`. Password is only needed for legacy extra-lock packages.")
                 .size(13),
         ]
         .spacing(12)
@@ -586,7 +656,7 @@ impl App {
             text("Restore original bytes").size(18),
             self.file_fields(),
             button(text("Restore")).on_press(Message::Restore).style(button::secondary),
-            text("Reads both legacy .deobf packages and stub-wrapped PE files.")
+            text("Auto-keyed files restore without a password. Legacy passworded .deobf / extra-lock packages still need the password field.")
                 .size(13),
         ]
         .spacing(12)
@@ -604,8 +674,12 @@ fn labeled_input<'a>(
     column![
         text(label).size(13),
         row![
-            text_input(label, value).on_input(on_input).width(Length::Fill),
-            button(text(browse)).on_press(on_browse).style(button::secondary),
+            text_input(label, value)
+                .on_input(on_input)
+                .width(Length::Fill),
+            button(text(browse))
+                .on_press(on_browse)
+                .style(button::secondary),
         ]
         .spacing(10),
     ]

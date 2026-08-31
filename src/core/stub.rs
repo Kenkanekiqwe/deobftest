@@ -10,11 +10,21 @@ use std::{env, fs};
 ///   24     runtime kind: 0=pe, 1=jar, 2=python
 ///   25..32 reserved
 ///   32..64 BLAKE3(b"DEOBF-STUB-V1" || container)
+///
+/// Optional auto-key record sits between the container and the trailer:
+///   0..8   magic `DEOBFK01`
+///   8      version = 1
+///   9      flags: bit0 = raw AEAD key present
+///   10..16 reserved
+///   16..48 32-byte XChaCha20-Poly1305 key
 pub const STUB_MAGIC: &[u8; 8] = b"DEOBFS01";
 pub const STUB_TRAILER_LEN: usize = 64;
 pub const KIND_PE: u8 = 0;
 pub const KIND_JAR: u8 = 1;
 pub const KIND_PYTHON: u8 = 2;
+pub const KEY_MAGIC: &[u8; 8] = b"DEOBFK01";
+pub const KEY_RECORD_LEN: usize = 48;
+pub const AUTO_KEY_LEN: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StubTrailer {
@@ -50,7 +60,11 @@ pub fn parse_trailer(file: &[u8]) -> Option<StubTrailer> {
     if hasher.finalize().as_bytes() != &trailer[32..64] {
         return None;
     }
-    Some(StubTrailer { container_offset, container_size, kind })
+    Some(StubTrailer {
+        container_offset,
+        container_size,
+        kind,
+    })
 }
 
 pub fn extract_container(file: &[u8]) -> Option<&[u8]> {
@@ -67,6 +81,52 @@ pub fn extract(file: &[u8]) -> Option<(Vec<u8>, u8)> {
     Some((file[start..end].to_vec(), trailer.kind))
 }
 
+pub fn encode_key_record(key: &[u8; AUTO_KEY_LEN]) -> [u8; KEY_RECORD_LEN] {
+    let mut rec = [0u8; KEY_RECORD_LEN];
+    rec[0..8].copy_from_slice(KEY_MAGIC);
+    rec[8] = 1;
+    rec[9] = 1;
+    rec[16..48].copy_from_slice(key);
+    rec
+}
+
+pub fn parse_key_record(bytes: &[u8]) -> Option<[u8; AUTO_KEY_LEN]> {
+    if bytes.len() != KEY_RECORD_LEN {
+        return None;
+    }
+    if &bytes[0..8] != KEY_MAGIC {
+        return None;
+    }
+    if bytes[8] != 1 {
+        return None;
+    }
+    if bytes[9] & 1 == 0 {
+        return None;
+    }
+    let mut key = [0u8; AUTO_KEY_LEN];
+    key.copy_from_slice(&bytes[16..48]);
+    Some(key)
+}
+
+/// Locate a packer-style auto-key: overlay record on a stub PE, or a trailing
+/// record on a raw DEOBF container (JAR/Python/legacy-extension packages).
+pub fn extract_embedded_key(file: &[u8]) -> Option<[u8; AUTO_KEY_LEN]> {
+    if let Some(trailer) = parse_trailer(file) {
+        let container_end = usize::try_from(trailer.container_offset)
+            .ok()?
+            .checked_add(usize::try_from(trailer.container_size).ok()?)?;
+        let trailer_at = file.len() - STUB_TRAILER_LEN;
+        if trailer_at >= container_end + KEY_RECORD_LEN {
+            return parse_key_record(&file[trailer_at - KEY_RECORD_LEN..trailer_at]);
+        }
+        return None;
+    }
+    if file.len() >= KEY_RECORD_LEN {
+        return parse_key_record(&file[file.len() - KEY_RECORD_LEN..]);
+    }
+    None
+}
+
 fn stub_prefix(image: &[u8]) -> &[u8] {
     match parse_trailer(image) {
         Some(trailer) => &image[..trailer.container_offset as usize],
@@ -74,7 +134,12 @@ fn stub_prefix(image: &[u8]) -> &[u8] {
     }
 }
 
-pub fn wrap_stub(stub: &[u8], container: &[u8], kind: u8) -> Result<Vec<u8>> {
+pub fn wrap_stub(
+    stub: &[u8],
+    container: &[u8],
+    kind: u8,
+    embedded_key: Option<&[u8; AUTO_KEY_LEN]>,
+) -> Result<Vec<u8>> {
     if !matches!(kind, KIND_PE | KIND_JAR | KIND_PYTHON) {
         bail!("unsupported stub runtime kind {kind}");
     }
@@ -82,10 +147,18 @@ pub fn wrap_stub(stub: &[u8], container: &[u8], kind: u8) -> Result<Vec<u8>> {
     if stub.len() < 2 || &stub[..2] != b"MZ" {
         bail!("runtime stub is not a Windows PE image");
     }
-    let mut out = Vec::with_capacity(stub.len() + container.len() + STUB_TRAILER_LEN);
+    let extra = if embedded_key.is_some() {
+        KEY_RECORD_LEN
+    } else {
+        0
+    };
+    let mut out = Vec::with_capacity(stub.len() + container.len() + extra + STUB_TRAILER_LEN);
     out.extend_from_slice(stub);
     let offset = out.len() as u64;
     out.extend_from_slice(container);
+    if let Some(key) = embedded_key {
+        out.extend_from_slice(&encode_key_record(key));
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"DEOBF-STUB-V1");
     hasher.update(container);
@@ -128,10 +201,7 @@ pub fn load_stub_image() -> Result<Vec<u8>> {
             }
         }
     }
-    let stem = exe
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let stem = exe.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     if matches!(stem, "deobf" | "deobf-gui" | "deobf-stub") {
         let bytes = fs::read(&exe).with_context(|| format!("read {}", exe.display()))?;
         if bytes.len() >= 2 && bytes.starts_with(b"MZ") {
@@ -188,7 +258,7 @@ pub fn fallback_pe_stub() -> Vec<u8> {
     image[opt + 88..opt + 96].copy_from_slice(&0x10_0000u64.to_le_bytes()); // HeapReserve
     image[opt + 96..opt + 104].copy_from_slice(&0x1000u64.to_le_bytes()); // HeapCommit
     image[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes()); // NumberOfRvaAndSizes
-    // DataDirectory[1] import
+                                                                       // DataDirectory[1] import
     image[opt + 120..opt + 124].copy_from_slice(&0x2000u32.to_le_bytes());
     image[opt + 124..opt + 128].copy_from_slice(&40u32.to_le_bytes());
 
@@ -212,7 +282,9 @@ pub fn fallback_pe_stub() -> Vec<u8> {
 
     // .text: sub rsp,28h; xor ecx,ecx; call [rip+IAT]
     // RIP after the call instruction = 0x100C; IAT RVA = 0x2038; rel = 0x102C
-    let text = [0x48, 0x83, 0xEC, 0x28, 0x31, 0xC9, 0xFF, 0x15, 0x2C, 0x10, 0x00, 0x00];
+    let text = [
+        0x48, 0x83, 0xEC, 0x28, 0x31, 0xC9, 0xFF, 0x15, 0x2C, 0x10, 0x00, 0x00,
+    ];
     image[0x200..0x200 + text.len()].copy_from_slice(&text);
 
     // .idata at file offset 0x400 = RVA 0x2000
@@ -221,7 +293,7 @@ pub fn fallback_pe_stub() -> Vec<u8> {
     image[idata..idata + 4].copy_from_slice(&0x2028u32.to_le_bytes()); // OriginalFirstThunk / INT
     image[idata + 12..idata + 16].copy_from_slice(&0x2058u32.to_le_bytes()); // Name
     image[idata + 16..idata + 20].copy_from_slice(&0x2038u32.to_le_bytes()); // FirstThunk / IAT
-    // INT at 0x2028
+                                                                             // INT at 0x2028
     image[idata + 0x28..idata + 0x30].copy_from_slice(&0x2048u64.to_le_bytes());
     // IAT at 0x2038
     image[idata + 0x38..idata + 0x40].copy_from_slice(&0x2048u64.to_le_bytes());
@@ -243,17 +315,39 @@ mod tests {
         let stub = fallback_pe_stub();
         assert!(stub.starts_with(b"MZ"));
         let container = b"DEOBF01\0fake-container-bytes";
-        let wrapped = wrap_stub(&stub, container, KIND_PE).unwrap();
+        let wrapped = wrap_stub(&stub, container, KIND_PE, None).unwrap();
         assert!(wrapped.starts_with(b"MZ"));
         let (got, kind) = extract(&wrapped).unwrap();
         assert_eq!(kind, KIND_PE);
         assert_eq!(got, container);
+        assert!(extract_embedded_key(&wrapped).is_none());
+    }
+
+    #[test]
+    fn wrap_embeds_auto_key_between_container_and_trailer() {
+        let stub = fallback_pe_stub();
+        let container = b"DEOBF01\0fake-container-bytes";
+        let key = [0x5Au8; AUTO_KEY_LEN];
+        let wrapped = wrap_stub(&stub, container, KIND_PE, Some(&key)).unwrap();
+        assert!(wrapped.starts_with(b"MZ"));
+        let (got, kind) = extract(&wrapped).unwrap();
+        assert_eq!(kind, KIND_PE);
+        assert_eq!(got, container);
+        assert_eq!(extract_embedded_key(&wrapped).unwrap(), key);
+    }
+
+    #[test]
+    fn trailing_key_record_on_raw_container() {
+        let mut file = b"DEOBF01\0not-a-stub".to_vec();
+        let key = [0x11u8; AUTO_KEY_LEN];
+        file.extend_from_slice(&encode_key_record(&key));
+        assert_eq!(extract_embedded_key(&file).unwrap(), key);
     }
 
     #[test]
     fn rejects_tampered_trailer() {
         let stub = fallback_pe_stub();
-        let mut wrapped = wrap_stub(&stub, b"payload", KIND_PE).unwrap();
+        let mut wrapped = wrap_stub(&stub, b"payload", KIND_PE, None).unwrap();
         let last = wrapped.len() - 1;
         wrapped[last] ^= 1;
         assert!(extract(&wrapped).is_none());
