@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod passes;
 pub mod pipeline;
 pub mod profile;
+pub mod runtime;
 pub mod validation;
 
 pub use analyzer::{analyze, Analysis, Architecture};
@@ -26,4 +27,5 @@ pub use manifest::ProtectionManifest;
 pub use passes::{IntegrityGuard, SizeInvariant};
 pub use pipeline::{Pass, Pipeline};
 pub use profile::{ProtectionProfile, Strength};
+pub use runtime::{default_runtime_output, run_protected, RuntimeKind};
 pub use validation::{validate, ValidationReport};
