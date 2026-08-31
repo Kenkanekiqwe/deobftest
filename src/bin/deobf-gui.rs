@@ -4,7 +4,7 @@ use deobf::{analyze_only, protect_file, run_protected, unprotect_file, EngineOpt
 use iced::widget::{button, column, container, pick_list, row, text, text_input};
 use iced::{Element, Length, Task, Theme};
 use rfd::FileDialog;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() -> iced::Result {
     iced::application("DEOBF — Windows Protection Studio", App::update, App::view)
@@ -127,7 +127,7 @@ impl App {
     }
 }
 
-fn protected_output(input: &PathBuf) -> PathBuf {
+fn protected_output(input: &Path) -> PathBuf {
     let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
     let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("protected");
     parent.join(format!("{stem}.deobf"))

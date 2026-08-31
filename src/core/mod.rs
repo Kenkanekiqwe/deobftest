@@ -16,7 +16,7 @@ pub mod runtime;
 pub mod validation;
 
 pub use analyzer::{analyze, Analysis, Architecture};
-pub use artifact::{ArtifactInfo, ArtifactKind};
+pub use artifact::{detect, ArtifactInfo, ArtifactKind};
 pub use backends::{backend_for, protect_with_backend, BackendKind, BackendReport, ProtectionBackend};
 pub use compatible::{protect_compatible, verify_compatible, CompatibilityManifest};
 pub use container::{pack, unpack, ContainerInfo};

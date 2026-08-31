@@ -25,7 +25,7 @@ impl Pipeline {
         Self { passes: Vec::new() }
     }
 
-    pub fn add<T: Transform + Send + Sync + 'static>(mut self, pass: T) -> Self {
+    pub fn with<T: Transform + Send + Sync + 'static>(mut self, pass: T) -> Self {
         self.passes.push(Box::new(pass));
         self
     }
@@ -97,14 +97,14 @@ mod tests {
 
     #[test]
     fn pipeline_preserves_order() {
-        let pipeline = Pipeline::new().add(IdentityPass).add(VerifyPass);
+        let pipeline = Pipeline::new().with(IdentityPass).with(VerifyPass);
         assert_eq!(pipeline.names(), vec!["identity", "verify"]);
         assert_eq!(pipeline.len(), 2);
     }
 
     #[test]
     fn pipeline_rejects_empty_input() {
-        let pipeline = Pipeline::new().add(VerifyPass);
+        let pipeline = Pipeline::new().with(VerifyPass);
         assert!(pipeline.run(Vec::new(), &ProtectionProfile::safe()).is_err());
     }
 }

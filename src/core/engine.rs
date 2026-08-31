@@ -96,9 +96,9 @@ pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, Engin
             .with_context(|| format!("{backend_kind:?} backend verification failed"))?;
     }
 
-    let mut pipeline = Pipeline::new().add(SizeInvariant).add(CapabilityGuard);
-    if options.add_integrity { pipeline = pipeline.add(IntegrityGuard); }
-    if options.verify { pipeline = pipeline.add(super::pipeline::VerifyPass); }
+    let mut pipeline = Pipeline::new().with(SizeInvariant).with(CapabilityGuard);
+    if options.add_integrity { pipeline = pipeline.with(IntegrityGuard); }
+    if options.verify { pipeline = pipeline.with(super::pipeline::VerifyPass); }
     let mut passes: Vec<String> = pipeline.names().into_iter().map(str::to_owned).collect();
     passes.insert(0, format!("backend:{backend_kind:?}"));
     passes.extend(backend_report.notes.iter().cloned());
@@ -165,7 +165,8 @@ pub fn unprotect_file(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
             let n = u32::from_le_bytes(marker) as usize; let mut enc_len = [0u8; 4]; src.read_exact(&mut enc_len)?; let enc_n = u32::from_le_bytes(enc_len) as usize;
             if n == 0 || n > CHUNK || !(TAG_LEN..=CHUNK + TAG_LEN).contains(&enc_n) { bail!("invalid container chunk"); }
             let mut enc = vec![0u8; enc_n]; src.read_exact(&mut enc)?; let mut pad_len = [0u8; 2]; src.read_exact(&mut pad_len)?; let pad = u16::from_le_bytes(pad_len) as usize;
-            if pad > MAX_PAD { bail!("invalid padding"); } if pad != 0 { let mut junk = vec![0u8; pad]; src.read_exact(&mut junk)?; }
+            if pad > MAX_PAD { bail!("invalid padding"); }
+            if pad != 0 { let mut junk = vec![0u8; pad]; src.read_exact(&mut junk)?; }
             let compressed = cipher.decrypt(&nonce(&base, index), Payload { msg: &enc, aad: &aad(index, plain_len, flags[0]) }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified package"))?;
             let plain = zstd::bulk::decompress(&compressed, CHUNK).unwrap_or(compressed); if plain.len() != n { bail!("invalid decompressed chunk"); }
             digest.update(&plain); dst.write_all(&plain)?; total += n as u64; index += 1;

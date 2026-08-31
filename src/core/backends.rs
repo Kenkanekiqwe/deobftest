@@ -255,7 +255,7 @@ fn transform_class_debug_attributes(data: &[u8]) -> Result<Vec<u8>> {
                 if end > data.len() { bail!("truncated UTF-8 constant") }
                 let value = &data[start..end];
                 if value == b"SourceFile" || value == b"SourceDebugExtension" {
-                    let replacement = if value == b"SourceFile" { b"XSourceFile" } else { b"XSourceDebugExtension" };
+                    let replacement: &[u8] = if value == b"SourceFile" { b"XSourceFile" } else { b"XSourceDebugExtension" };
                     // Keep the original constant length so every following offset stays valid.
                     out[start..end].fill(b'_');
                     out[start..start + replacement.len().min(len)].copy_from_slice(&replacement[..replacement.len().min(len)]);
