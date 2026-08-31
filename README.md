@@ -15,8 +15,9 @@ The existing container already provides:
 - Optional Zstandard compression in the protected payload.
 - Randomized container material.
 - Atomic writes through temporary files.
-- No original filename or extension in the cryptographic header.
-- Backward-compatible reading of the legacy v1 container.
+- Original filename and extension on Protect output (`.exe` stays `.exe`).
+- PE outputs wrapped as a launchable Windows loader stub plus authenticated overlay.
+- Backward-compatible reading of legacy `.deobf` packages.
 
 ## V3 architecture
 
@@ -80,15 +81,15 @@ The project also avoids features whose primary purpose is stealth, security-prod
 ## CLI
 
 ```text
-deobf protect <input> -o <output>
+deobf protect <input> [-o <output>]
 deobf unprotect <input> -o <output>
 deobf inspect <input>
-deobf run-jar <input> [-- <java args>]
-deobf text encrypt <text>
-deobf text decrypt <ciphertext>
+deobf run <package> <pe|jar|python>
 ```
 
-Passwords may be supplied interactively; command-line password arguments remain available for automation but are less desirable because process arguments can be observable by other local software.
+If `-o` is omitted, Protect writes `protected/<original-filename>` next to the input, keeping the original extension. PE files become a stub-wrapped EXE that prompts for the password and launches the payload. JAR and Python keep `.jar` / `.py` but are not self-running stubs yet (`deobf run`).
+
+Passwords may be supplied interactively; command-line password arguments remain available for automation but are less desirable because process arguments can be observable by other local software. The PE stub also reads `DEOBF_PASSWORD`.
 
 ## Development
 
@@ -98,5 +99,3 @@ cargo test --all-targets --locked
 cargo clippy --all-targets --locked -- -D warnings
 cargo build --release --locked
 ```
-
-CI runs formatting, tests, Clippy and release builds for Windows x64, Linux x64 and macOS ARM64. Version tags (`v*`) publish release binaries with SHA-256 checksums.

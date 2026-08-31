@@ -1,0 +1,148 @@
+use deobf::core::stub::{self, KIND_PE};
+use deobf::{default_protected_output, protect_file, unprotect_file, EngineOptions};
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+
+fn sample_pe() -> Vec<u8> {
+    let mut data = vec![0u8; 0x80];
+    data[..2].copy_from_slice(b"MZ");
+    data[0x3c..0x40].copy_from_slice(&(0x40u32).to_le_bytes());
+    data[0x40..0x44].copy_from_slice(b"PE\0\0");
+    data[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
+    data[0x46..0x48].copy_from_slice(&3u16.to_le_bytes());
+    data[0x54..0x56].copy_from_slice(&0x20bu16.to_le_bytes());
+    data
+}
+
+fn password() -> &'static [u8] {
+    b"correct horse battery staple"
+}
+
+#[test]
+fn default_output_keeps_original_filename_and_extension() {
+    assert_eq!(
+        default_protected_output(PathBuf::from("C:/app/foo.exe").as_path()),
+        PathBuf::from("C:/app/protected/foo.exe")
+    );
+    assert_eq!(
+        default_protected_output(PathBuf::from("/tmp/tool.jar").as_path()),
+        PathBuf::from("/tmp/protected/tool.jar")
+    );
+    assert_eq!(
+        default_protected_output(PathBuf::from("script.py").as_path()),
+        PathBuf::from("protected/script.py")
+    );
+}
+
+#[test]
+fn protect_pe_writes_exe_not_deobf() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("foo.exe");
+    let output = dir.path().join("protected").join("foo.exe");
+    fs::write(&input, sample_pe()).unwrap();
+
+    let report = protect_file(&input, &output, password(), &EngineOptions::default()).unwrap();
+    assert!(output.exists(), "expected {}", output.display());
+    assert_eq!(output.extension().and_then(|e| e.to_str()), Some("exe"));
+    let bytes = fs::read(&output).unwrap();
+    assert!(bytes.starts_with(b"MZ"), "protected PE must remain a PE image");
+    assert!(stub::parse_trailer(&bytes).is_some(), "protected PE must carry a DEOBF overlay");
+    assert!(report.passes.iter().any(|p| p.contains("windows-stub")));
+
+    let restored = dir.path().join("restored.exe");
+    unprotect_file(&output, &restored, password()).unwrap();
+    assert_eq!(fs::read(restored).unwrap(), sample_pe());
+}
+
+#[test]
+fn protect_python_keeps_py_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("app.py");
+    let output = dir.path().join("protected").join("app.py");
+    fs::write(&input, b"print('hello from deobf')\n").unwrap();
+    protect_file(&input, &output, password(), &EngineOptions::default()).unwrap();
+    assert_eq!(output.extension().and_then(|e| e.to_str()), Some("py"));
+    let restored = dir.path().join("out.py");
+    unprotect_file(&output, &restored, password()).unwrap();
+    assert_eq!(fs::read(restored).unwrap(), b"print('hello from deobf')\n");
+}
+
+#[test]
+fn legacy_deobf_package_still_unprotects() {
+    let exe = env!("CARGO_BIN_EXE_deobf");
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("notes.txt");
+    let packaged = dir.path().join("notes.deobf");
+    let output = dir.path().join("roundtrip.txt");
+    fs::write(&input, b"legacy-container-bytes").unwrap();
+    let result = Command::new(exe)
+        .args([
+            "protect",
+            input.to_str().unwrap(),
+            "-o",
+            packaged.to_str().unwrap(),
+            "--password",
+            "correct horse battery staple",
+        ])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "protect failed: {}", String::from_utf8_lossy(&result.stderr));
+    let result = Command::new(exe)
+        .args([
+            "unprotect",
+            packaged.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--password",
+            "correct horse battery staple",
+        ])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "unprotect failed: {}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(fs::read(output).unwrap(), b"legacy-container-bytes");
+}
+
+fn write_stub_file(dir: &std::path::Path) -> PathBuf {
+    let path = dir.join("tiny-stub.exe");
+    fs::write(&path, stub::fallback_pe_stub()).unwrap();
+    path
+}
+
+#[test]
+fn cli_protect_pe_without_dash_o_writes_protected_foo_exe() {
+    let exe = env!("CARGO_BIN_EXE_deobf");
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("foo.exe");
+    fs::write(&input, sample_pe()).unwrap();
+    let stub_path = write_stub_file(dir.path());
+    let result = Command::new(exe)
+        .args([
+            "protect",
+            input.to_str().unwrap(),
+            "--password",
+            "correct horse battery staple",
+        ])
+        .env("DEOBF_STUB_PATH", &stub_path)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "protect failed: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        result.status,
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let output = dir.path().join("protected").join("foo.exe");
+    assert!(output.is_file(), "expected {}", output.display());
+    let bytes = fs::read(&output).unwrap();
+    assert!(bytes.starts_with(b"MZ"));
+    assert_eq!(stub::extract(&bytes).unwrap().1, KIND_PE);
+}
+
+#[test]
+fn fallback_pe_is_parseable() {
+    let pe = stub::fallback_pe_stub();
+    let info = deobf::core::parse_pe(&pe).expect("fallback stub must be a valid PE");
+    assert_eq!(info.machine, 0x8664);
+}

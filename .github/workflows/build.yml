@@ -39,7 +39,7 @@ jobs:
       # the release artifact. Cargo may update Cargo.lock when dependencies
       # changed, avoiding the --locked failure seen in CI.
       - name: Build release binaries
-        run: cargo build --release --target x86_64-pc-windows-msvc --bin deobf --bin deobf-gui
+        run: cargo build --release --target x86_64-pc-windows-msvc --bin deobf --bin deobf-gui --bin deobf-stub
 
       - name: Package
         shell: pwsh
@@ -47,8 +47,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item "target/x86_64-pc-windows-msvc/release/deobf.exe" "dist/deobf.exe"
           Copy-Item "target/x86_64-pc-windows-msvc/release/deobf-gui.exe" "dist/deobf-gui.exe"
-          Compress-Archive -Path "dist/deobf.exe", "dist/deobf-gui.exe" -DestinationPath "dist/deobf-windows-x64.zip" -Force
-          Get-FileHash "dist/deobf.exe", "dist/deobf-gui.exe", "dist/deobf-windows-x64.zip" -Algorithm SHA256 |
+          Copy-Item "target/x86_64-pc-windows-msvc/release/deobf-stub.exe" "dist/deobf-stub.exe"
+          Compress-Archive -Path "dist/deobf.exe", "dist/deobf-gui.exe", "dist/deobf-stub.exe" -DestinationPath "dist/deobf-windows-x64.zip" -Force
+          Get-FileHash "dist/deobf.exe", "dist/deobf-gui.exe", "dist/deobf-stub.exe", "dist/deobf-windows-x64.zip" -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } |
             Set-Content "dist/SHA256SUMS.txt"
 

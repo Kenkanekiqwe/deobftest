@@ -30,8 +30,10 @@ pub fn is_jar(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Returns a safe output suffix for protected artifacts.
+/// Returns the original filename so protected output keeps its extension.
 pub fn protected_name(path: &Path) -> String {
-    let stem = path.file_name().and_then(|x| x.to_str()).unwrap_or("payload");
-    format!("{stem}.deobf")
+    path.file_name()
+        .and_then(|x| x.to_str())
+        .unwrap_or("payload.bin")
+        .to_string()
 }

@@ -4,7 +4,11 @@ use rpassword::prompt_password;
 use std::{path::PathBuf, process::ExitCode};
 use zeroize::Zeroizing;
 
-use deobf::{analyze_only, protect_file, run_protected, unprotect_file, EngineOptions, RuntimeKind};
+use deobf::{
+    analyze_only, default_protected_output, protect_file, run_embedded_stub, run_protected,
+    unprotect_file, EngineOptions, RuntimeKind,
+};
+use deobf::core::stub;
 
 #[derive(Parser)]
 #[command(name = "deobf", version, about = "DEOBF Windows software protection studio")]
@@ -18,7 +22,7 @@ enum CommandKind {
     Protect {
         input: PathBuf,
         #[arg(short, long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
         #[arg(long, default_value = "balanced")]
         profile: String,
         #[arg(long)]
@@ -83,12 +87,21 @@ fn password(value: Option<String>, confirm: bool) -> Result<Zeroizing<Vec<u8>>> 
 }
 
 fn main() -> Result<ExitCode> {
+    if let Some(result) = run_embedded_stub() {
+        return match result {
+            Ok(code) => Ok(ExitCode::from(u8::try_from(code).unwrap_or(1))),
+            Err(err) => Err(err),
+        };
+    }
+
     let cli = Cli::parse();
     match cli.command {
         CommandKind::Protect { input, output, profile, password: value } => {
             let pass = password(value, true)?;
             let analysis = analyze_only(&std::fs::read(&input).with_context(|| format!("read {}", input.display()))?)?;
             println!("Detected: {} / {}", analysis.kind, analysis.architecture);
+            let output = output.unwrap_or_else(|| default_protected_output(&input));
+            println!("Writing {}", output.display());
             let report = protect_file(
                 &input,
                 &output,
@@ -98,7 +111,11 @@ fn main() -> Result<ExitCode> {
             println!("Protected: {} -> {} bytes", report.input_size, report.output_size);
             println!("Input SHA-256-style BLAKE3: {}", report.input_hash);
             println!("Package BLAKE3: {}", report.output_hash);
-            println!("Runtime: use `deobf run <package> <pe|jar|python>` to execute it.");
+            if analysis.kind == "Pe" {
+                println!("Runtime: output is a Windows PE stub; double-click it or use `deobf run`.");
+            } else {
+                println!("Runtime: original extension kept. JAR/Python still launch via `deobf run <file> <jar|python>` (no self-running stub yet).");
+            }
         }
         CommandKind::Unprotect { input, output, password: value } => {
             let pass = password(value, false)?;
@@ -107,13 +124,26 @@ fn main() -> Result<ExitCode> {
         }
         CommandKind::Inspect { input } => {
             let data = std::fs::read(&input).with_context(|| format!("read {}", input.display()))?;
-            let analysis = analyze_only(&data)?;
-            println!("type: {}", analysis.kind);
-            println!("architecture: {}", analysis.architecture);
-            println!("executable: {}", analysis.executable);
-            println!("debug markers: {}", analysis.has_debug_markers);
-            println!("archive signature: {}", analysis.has_archive_signature);
-            println!("size: {} bytes", data.len());
+            if let Some(trailer) = stub::parse_trailer(&data) {
+                println!("type: DEOBF protected executable");
+                println!("runtime stub: present");
+                println!("payload runtime: {}", match trailer.kind {
+                    stub::KIND_PE => "pe",
+                    stub::KIND_JAR => "jar",
+                    stub::KIND_PYTHON => "python",
+                    _ => "unknown",
+                });
+                println!("container size: {} bytes", trailer.container_size);
+                println!("file size: {} bytes", data.len());
+            } else {
+                let analysis = analyze_only(&data)?;
+                println!("type: {}", analysis.kind);
+                println!("architecture: {}", analysis.architecture);
+                println!("executable: {}", analysis.executable);
+                println!("debug markers: {}", analysis.has_debug_markers);
+                println!("archive signature: {}", analysis.has_archive_signature);
+                println!("size: {} bytes", data.len());
+            }
         }
         CommandKind::Run { package, kind, interpreter, password: value, args } => {
             let pass = password(value, false)?;

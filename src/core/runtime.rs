@@ -3,6 +3,7 @@ use rand::{rngs::OsRng, RngCore};
 use std::{fs, path::{Path, PathBuf}, process::{Command, ExitStatus}};
 
 use super::engine::unprotect_file;
+use super::stub::{self, KIND_JAR, KIND_PE, KIND_PYTHON};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeKind {
@@ -17,6 +18,15 @@ impl RuntimeKind {
             Self::Pe => "pe",
             Self::Jar => "jar",
             Self::Python => "python",
+        }
+    }
+
+    pub fn from_stub_kind(kind: u8) -> Option<Self> {
+        match kind {
+            KIND_PE => Some(Self::Pe),
+            KIND_JAR => Some(Self::Jar),
+            KIND_PYTHON => Some(Self::Python),
+            _ => None,
         }
     }
 }
@@ -85,6 +95,59 @@ pub fn run_protected(
     result
 }
 
+/// If this process image carries a DEOBF stub overlay, restore and launch it.
+/// Returns `None` when the current executable is a normal CLI/GUI binary.
+pub fn run_embedded_stub() -> Option<Result<i32>> {
+    let exe = std::env::current_exe().ok()?;
+    let bytes = fs::read(&exe).ok()?;
+    let (container, kind_u8) = stub::extract(&bytes)?;
+    let kind = RuntimeKind::from_stub_kind(kind_u8)?;
+    Some(run_embedded_container(&container, kind))
+}
+
+fn run_embedded_container(container: &[u8], kind: RuntimeKind) -> Result<i32> {
+    #[cfg(windows)]
+    ensure_console();
+
+    let pass = stub_password()?;
+    let root = unique_runtime_dir()?;
+    create_private_dir(&root).context("create stub runtime directory")?;
+    let package = root.join("package.deobf");
+    let result = (|| -> Result<i32> {
+        fs::write(&package, container).with_context(|| format!("write {}", package.display()))?;
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let status = run_protected(&package, &pass, kind, None, &args)?;
+        Ok(status.code().unwrap_or(1))
+    })();
+    let _ = fs::remove_file(&package);
+    let _ = fs::remove_dir_all(&root);
+    result.context("launch embedded protected payload")
+}
+
+fn stub_password() -> Result<Vec<u8>> {
+    if let Ok(value) = std::env::var("DEOBF_PASSWORD") {
+        if value.len() < 12 {
+            bail!("password must contain at least 12 characters");
+        }
+        return Ok(value.into_bytes());
+    }
+    let password = rpassword::prompt_password("DEOBF password: ").context("read password")?;
+    if password.len() < 12 {
+        bail!("password must contain at least 12 characters");
+    }
+    Ok(password.into_bytes())
+}
+
+#[cfg(windows)]
+fn ensure_console() {
+    use windows_sys::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            let _ = AllocConsole();
+        }
+    }
+}
+
 fn unique_runtime_dir() -> Result<PathBuf> {
     let mut random = [0u8; 12];
     OsRng.fill_bytes(&mut random);
@@ -129,11 +192,18 @@ fn restrict_file_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn default_runtime_output(input: &Path) -> PathBuf {
+/// Default Protect output: same filename and extension as the input, in a
+/// `protected` subdirectory so the original is never overwritten.
+pub fn default_protected_output(input: &Path) -> PathBuf {
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input
-        .file_stem()
+    let name = input
+        .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("protected");
-    parent.join(format!("{stem}.deobf"))
+        .unwrap_or("protected.bin");
+    parent.join("protected").join(name)
+}
+
+/// Deprecated name kept for library compatibility. Same as `default_protected_output`.
+pub fn default_runtime_output(input: &Path) -> PathBuf {
+    default_protected_output(input)
 }

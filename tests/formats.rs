@@ -8,7 +8,8 @@ fn parses_pe_header() {
     data[0x40..0x44].copy_from_slice(b"PE\0\0");
     data[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
     data[0x46..0x48].copy_from_slice(&3u16.to_le_bytes());
-    data[0x54..0x56].copy_from_slice(&0x20bu16.to_le_bytes());
+    data[0x54..0x56].copy_from_slice(&0x00f0u16.to_le_bytes());
+    data[0x58..0x5A].copy_from_slice(&0x20bu16.to_le_bytes());
     let info = parse_pe(&data).unwrap();
     assert_eq!(info.machine, 0x8664);
     assert_eq!(info.sections, 3);

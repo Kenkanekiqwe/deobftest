@@ -4,11 +4,12 @@ use blake3::Hasher;
 use chacha20poly1305::{aead::{Aead, KeyInit, Payload}, XChaCha20Poly1305, XNonce};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::{fs::{self, File}, io::{Read, Write}, path::Path, time::Instant};
+use std::{fs::{self, File}, io::{Cursor, Read, Write}, path::{Path, PathBuf}, time::Instant};
 
 use super::artifact::ArtifactKind;
 use super::backends::{backend_for, BackendReport};
 use super::pipeline::Pipeline;
+use super::stub::{self, KIND_JAR, KIND_PE, KIND_PYTHON};
 use super::validation::validate;
 use super::{analyze, Analysis, CapabilityGuard, IntegrityGuard, ProtectionProfile, SizeInvariant};
 
@@ -55,6 +56,47 @@ fn aad(index: u64, plain_len: u64, flags: u8) -> Vec<u8> {
 }
 
 pub fn analyze_only(data: &[u8]) -> Result<AnalysisJson> { Ok(analyze(data)?.into()) }
+
+/// `foo.exe` -> `foo.exe.deobf-write-tmp` rather than `foo.deobf-write-tmp`.
+fn sibling_temp(path: &Path, tag: &str) -> PathBuf {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "out".into());
+    name.push(".");
+    name.push(tag);
+    path.with_file_name(name)
+}
+
+pub fn is_deobf_container(data: &[u8]) -> bool {
+    data.len() >= 8 && &data[..8] == MAGIC
+}
+
+/// Returns the authenticated DEOBF v2 container bytes, whether the file is a
+/// legacy `.deobf` package or a stub-wrapped PE with an overlay trailer.
+pub fn package_bytes(data: &[u8]) -> Result<&[u8]> {
+    if is_deobf_container(data) {
+        return Ok(data);
+    }
+    if let Some(container) = stub::extract_container(data) {
+        return Ok(container);
+    }
+    bail!("not a DEOBF v2 package")
+}
+
+fn stub_kind_for(input: &Path, analysis_kind: &str) -> u8 {
+    match analysis_kind {
+        "Pe" => KIND_PE,
+        "Jar" => KIND_JAR,
+        _ => {
+            let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext.eq_ignore_ascii_case("py") || ext.eq_ignore_ascii_case("pyc") {
+                KIND_PYTHON
+            } else if ext.eq_ignore_ascii_case("jar") {
+                KIND_JAR
+            } else {
+                KIND_PE
+            }
+        }
+    }
+}
 
 pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, EngineResult)> {
     let started = Instant::now();
@@ -109,6 +151,78 @@ pub fn protect(data: Vec<u8>, options: &EngineOptions) -> Result<(Vec<u8>, Engin
     Ok((output, EngineResult { analysis: analysis.into(), input_size, output_size, elapsed_ms: started.elapsed().as_millis(), input_hash, output_hash, passes, compatibility_mode: false, format_preserved: true }))
 }
 
+fn encrypt_container(payload: &[u8], pass: &[u8]) -> Result<Vec<u8>> {
+    let plain_len = payload.len() as u64;
+    let mut salt = [0u8; SALT_LEN]; let mut base = [0u8; NONCE_LEN];
+    OsRng.fill_bytes(&mut salt); OsRng.fill_bytes(&mut base);
+    let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
+    let mut dst = Vec::new();
+    dst.write_all(MAGIC)?; dst.write_all(&[VERSION, 1])?; dst.write_all(&salt)?; dst.write_all(&base)?; dst.write_all(&plain_len.to_le_bytes())?;
+    let mut src = payload; let mut index = 0u64; let mut digest = Hasher::new(); digest.update(b"DEOBF-CONTENT-V2");
+    let mut buf = vec![0u8; CHUNK];
+    while !src.is_empty() {
+        let n = src.len().min(CHUNK); buf[..n].copy_from_slice(&src[..n]); src = &src[n..]; digest.update(&buf[..n]);
+        let compressed = zstd::bulk::compress(&buf[..n], 3).unwrap_or_else(|_| buf[..n].to_vec());
+        let encrypted = cipher.encrypt(&nonce(&base, index), Payload { msg: &compressed, aad: &aad(index, plain_len, 1) }).map_err(|_| anyhow::anyhow!("encryption failed"))?;
+        dst.write_all(&(n as u32).to_le_bytes())?; dst.write_all(&(encrypted.len() as u32).to_le_bytes())?; dst.write_all(&encrypted)?;
+        let mut p = [0u8; 2]; OsRng.fill_bytes(&mut p); let pad = (u16::from_le_bytes(p) as usize) % (MAX_PAD + 1);
+        dst.write_all(&(pad as u16).to_le_bytes())?; if pad != 0 { let mut padding = vec![0u8; pad]; OsRng.fill_bytes(&mut padding); dst.write_all(&padding)?; }
+        index += 1;
+    }
+    let trailer = cipher.encrypt(&nonce(&base, u64::MAX), Payload { msg: digest.finalize().as_bytes(), aad: &aad(u64::MAX, plain_len, 1) }).map_err(|_| anyhow::anyhow!("trailer encryption failed"))?;
+    dst.write_all(b"TRLR")?; dst.write_all(&(trailer.len() as u32).to_le_bytes())?; dst.write_all(&trailer)?;
+    Ok(dst)
+}
+
+fn decrypt_container(package: &[u8], pass: &[u8]) -> Result<Vec<u8>> {
+    let mut src = Cursor::new(package);
+    let mut magic = [0u8; 8]; src.read_exact(&mut magic).context("reading DEOBF header")?; if &magic != MAGIC { bail!("not a DEOBF v2 package"); }
+    let mut one = [0u8; 1]; src.read_exact(&mut one)?; if one[0] != VERSION { bail!("unsupported DEOBF version {}", one[0]); }
+    let mut flags = [0u8; 1]; src.read_exact(&mut flags)?; if flags[0] & 1 == 0 { bail!("unsupported DEOBF flags"); }
+    let mut salt = [0u8; SALT_LEN]; let mut base = [0u8; NONCE_LEN]; let mut len = [0u8; 8]; src.read_exact(&mut salt)?; src.read_exact(&mut base)?; src.read_exact(&mut len)?;
+    let plain_len = u64::from_le_bytes(len); let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
+    let mut dst = Vec::with_capacity(usize::try_from(plain_len).unwrap_or(0));
+    let mut total = 0u64; let mut index = 0u64; let mut digest = Hasher::new(); digest.update(b"DEOBF-CONTENT-V2");
+    loop {
+        let mut marker = [0u8; 4]; src.read_exact(&mut marker)?;
+        if &marker == b"TRLR" {
+            let mut l = [0u8; 4]; src.read_exact(&mut l)?; if u32::from_le_bytes(l) as usize != 48 { bail!("invalid trailer"); }
+            let mut enc = vec![0u8; 48]; src.read_exact(&mut enc)?;
+            let expected = cipher.decrypt(&nonce(&base, u64::MAX), Payload { msg: &enc, aad: &aad(u64::MAX, plain_len, flags[0]) }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified package"))?;
+            if expected.as_slice() != digest.finalize().as_bytes() { bail!("content integrity check failed"); } break;
+        }
+        let n = u32::from_le_bytes(marker) as usize; let mut enc_len = [0u8; 4]; src.read_exact(&mut enc_len)?; let enc_n = u32::from_le_bytes(enc_len) as usize;
+        if n == 0 || n > CHUNK || !(TAG_LEN..=CHUNK + TAG_LEN).contains(&enc_n) { bail!("invalid container chunk"); }
+        let mut enc = vec![0u8; enc_n]; src.read_exact(&mut enc)?; let mut pad_len = [0u8; 2]; src.read_exact(&mut pad_len)?; let pad = u16::from_le_bytes(pad_len) as usize;
+        if pad > MAX_PAD { bail!("invalid padding"); }
+        if pad != 0 { let mut junk = vec![0u8; pad]; src.read_exact(&mut junk)?; }
+        let compressed = cipher.decrypt(&nonce(&base, index), Payload { msg: &enc, aad: &aad(index, plain_len, flags[0]) }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified package"))?;
+        let plain = zstd::bulk::decompress(&compressed, CHUNK).unwrap_or(compressed); if plain.len() != n { bail!("invalid decompressed chunk"); }
+        digest.update(&plain); dst.write_all(&plain)?; total += n as u64; index += 1;
+    }
+    if total != plain_len { bail!("length mismatch: container is damaged"); }
+    Ok(dst)
+}
+
+fn atomic_write(output: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+        }
+    }
+    let tmp = sibling_temp(output, "deobf-write-tmp");
+    let result = (|| -> Result<()> {
+        let mut dst = File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
+        dst.write_all(bytes)?;
+        dst.sync_all()?;
+        drop(dst);
+        fs::rename(&tmp, output).with_context(|| format!("rename {} -> {}", tmp.display(), output.display()))?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&tmp); }
+    result
+}
+
 pub fn protect_file(input: &Path, output: &Path, pass: &[u8], options: &EngineOptions) -> Result<EngineResult> {
     if input == output { bail!("input and output must differ"); }
     if pass.len() < MIN_PASSWORD_LEN {
@@ -116,65 +230,55 @@ pub fn protect_file(input: &Path, output: &Path, pass: &[u8], options: &EngineOp
     }
     let data = fs::read(input).with_context(|| format!("read {}", input.display()))?;
     let (payload, mut report) = protect(data, options)?;
-    let plain_len = payload.len() as u64;
-    let mut salt = [0u8; SALT_LEN]; let mut base = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut salt); OsRng.fill_bytes(&mut base);
-    let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into());
-    let tmp = output.with_extension("deobf-write-tmp");
-    let result = (|| -> Result<()> {
-        let mut src = payload.as_slice(); let mut dst = File::create(&tmp)?;
-        dst.write_all(MAGIC)?; dst.write_all(&[VERSION, 1])?; dst.write_all(&salt)?; dst.write_all(&base)?; dst.write_all(&plain_len.to_le_bytes())?;
-        let mut index = 0u64; let mut digest = Hasher::new(); digest.update(b"DEOBF-CONTENT-V2");
-        let mut buf = vec![0u8; CHUNK];
-        while !src.is_empty() {
-            let n = src.len().min(CHUNK); buf[..n].copy_from_slice(&src[..n]); src = &src[n..]; digest.update(&buf[..n]);
-            let compressed = zstd::bulk::compress(&buf[..n], 3).unwrap_or_else(|_| buf[..n].to_vec());
-            let encrypted = cipher.encrypt(&nonce(&base, index), Payload { msg: &compressed, aad: &aad(index, plain_len, 1) }).map_err(|_| anyhow::anyhow!("encryption failed"))?;
-            dst.write_all(&(n as u32).to_le_bytes())?; dst.write_all(&(encrypted.len() as u32).to_le_bytes())?; dst.write_all(&encrypted)?;
-            let mut p = [0u8; 2]; OsRng.fill_bytes(&mut p); let pad = (u16::from_le_bytes(p) as usize) % (MAX_PAD + 1);
-            dst.write_all(&(pad as u16).to_le_bytes())?; if pad != 0 { let mut padding = vec![0u8; pad]; OsRng.fill_bytes(&mut padding); dst.write_all(&padding)?; }
-            index += 1;
+    let container = encrypt_container(&payload, pass)?;
+    let (out_bytes, wrapped) = if report.analysis.kind == "Pe" {
+        let stub = stub::load_stub_or_fallback();
+        let wrapped = stub::wrap_stub(&stub, &container, stub_kind_for(input, &report.analysis.kind))
+            .context("wrap Windows runtime stub")?;
+        report.passes.push("runtime:windows-stub".into());
+        if stub::parse_trailer(&stub).is_none() && stub.len() < 4096 {
+            report.passes.push("runtime:fallback-pe".into());
         }
-        let trailer = cipher.encrypt(&nonce(&base, u64::MAX), Payload { msg: digest.finalize().as_bytes(), aad: &aad(u64::MAX, plain_len, 1) }).map_err(|_| anyhow::anyhow!("trailer encryption failed"))?;
-        dst.write_all(b"TRLR")?; dst.write_all(&(trailer.len() as u32).to_le_bytes())?; dst.write_all(&trailer)?; dst.sync_all()?; drop(dst); fs::rename(&tmp, output)?; Ok(())
-    })();
-    if result.is_err() { let _ = fs::remove_file(&tmp); }
-    result?;
-    report.output_size = fs::metadata(output)?.len(); report.output_hash = digest(&fs::read(output)?); report.compatibility_mode = false; report.format_preserved = false;
+        (wrapped, true)
+    } else {
+        (container, false)
+    };
+    atomic_write(output, &out_bytes)?;
+    report.output_size = fs::metadata(output)?.len();
+    report.output_hash = digest(&fs::read(output)?);
+    report.compatibility_mode = false;
+    // The inner payload is still an encrypted container. PE outputs are a
+    // launchable Windows image (stub + overlay); other formats keep the
+    // original caller-chosen extension but are not self-unpacking stubs yet.
+    report.format_preserved = wrapped;
     Ok(report)
+}
+
+pub fn unprotect_bytes(input: &[u8], pass: &[u8]) -> Result<Vec<u8>> {
+    let package = package_bytes(input)?;
+    decrypt_container(package, pass)
 }
 
 pub fn unprotect_file(input: &Path, output: &Path, pass: &[u8]) -> Result<()> {
     if input == output { bail!("input and output must differ"); }
-    let mut src = File::open(input).with_context(|| format!("open {}", input.display()))?;
-    let mut magic = [0u8; 8]; src.read_exact(&mut magic).context("reading DEOBF header")?; if &magic != MAGIC { bail!("not a DEOBF v2 package"); }
-    let mut one = [0u8; 1]; src.read_exact(&mut one)?; if one[0] != VERSION { bail!("unsupported DEOBF version {}", one[0]); }
-    let mut flags = [0u8; 1]; src.read_exact(&mut flags)?; if flags[0] & 1 == 0 { bail!("unsupported DEOBF flags"); }
-    let mut salt = [0u8; SALT_LEN]; let mut base = [0u8; NONCE_LEN]; let mut len = [0u8; 8]; src.read_exact(&mut salt)?; src.read_exact(&mut base)?; src.read_exact(&mut len)?;
-    let plain_len = u64::from_le_bytes(len); let key = derive_key(pass, &salt)?; let cipher = XChaCha20Poly1305::new((&key).into()); let tmp = output.with_extension("deobf-restore-tmp");
-    let result = (|| -> Result<()> {
-        let mut dst = File::create(&tmp)?; let mut total = 0u64; let mut index = 0u64; let mut digest = Hasher::new(); digest.update(b"DEOBF-CONTENT-V2");
-        loop {
-            let mut marker = [0u8; 4]; src.read_exact(&mut marker)?;
-            if &marker == b"TRLR" {
-                let mut l = [0u8; 4]; src.read_exact(&mut l)?; if u32::from_le_bytes(l) as usize != 48 { bail!("invalid trailer"); }
-                let mut enc = vec![0u8; 48]; src.read_exact(&mut enc)?;
-                let expected = cipher.decrypt(&nonce(&base, u64::MAX), Payload { msg: &enc, aad: &aad(u64::MAX, plain_len, flags[0]) }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified package"))?;
-                if expected.as_slice() != digest.finalize().as_bytes() { bail!("content integrity check failed"); } break;
-            }
-            let n = u32::from_le_bytes(marker) as usize; let mut enc_len = [0u8; 4]; src.read_exact(&mut enc_len)?; let enc_n = u32::from_le_bytes(enc_len) as usize;
-            if n == 0 || n > CHUNK || !(TAG_LEN..=CHUNK + TAG_LEN).contains(&enc_n) { bail!("invalid container chunk"); }
-            let mut enc = vec![0u8; enc_n]; src.read_exact(&mut enc)?; let mut pad_len = [0u8; 2]; src.read_exact(&mut pad_len)?; let pad = u16::from_le_bytes(pad_len) as usize;
-            if pad > MAX_PAD { bail!("invalid padding"); }
-            if pad != 0 { let mut junk = vec![0u8; pad]; src.read_exact(&mut junk)?; }
-            let compressed = cipher.decrypt(&nonce(&base, index), Payload { msg: &enc, aad: &aad(index, plain_len, flags[0]) }).map_err(|_| anyhow::anyhow!("authentication failed: wrong password or modified package"))?;
-            let plain = zstd::bulk::decompress(&compressed, CHUNK).unwrap_or(compressed); if plain.len() != n { bail!("invalid decompressed chunk"); }
-            digest.update(&plain); dst.write_all(&plain)?; total += n as u64; index += 1;
+    let data = fs::read(input).with_context(|| format!("open {}", input.display()))?;
+    let plain = unprotect_bytes(&data, pass)?;
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
-        if total != plain_len { bail!("length mismatch: container is damaged"); }
-        dst.sync_all()?; drop(dst); fs::rename(&tmp, output)?; Ok(())
+    }
+    let tmp = sibling_temp(output, "deobf-restore-tmp");
+    let result = (|| -> Result<()> {
+        let mut dst = File::create(&tmp)?;
+        dst.write_all(&plain)?;
+        dst.sync_all()?;
+        drop(dst);
+        fs::rename(&tmp, output)?;
+        Ok(())
     })();
-    if result.is_err() { let _ = fs::remove_file(&tmp); } result
+    if result.is_err() { let _ = fs::remove_file(&tmp); }
+    result
 }
 
 pub fn kind_name(kind: ArtifactKind) -> &'static str { match kind { ArtifactKind::Pe => "PE", ArtifactKind::Elf => "ELF", ArtifactKind::MachO => "Mach-O", ArtifactKind::Jar => "JAR", ArtifactKind::Zip => "ZIP", ArtifactKind::Raw => "Raw" } }

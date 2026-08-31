@@ -11,10 +11,13 @@ DEOBF is a Windows-first protection system. It separates **at-rest protection** 
 5. Compress chunks with Zstandard when useful.
 6. Authenticate the complete content with a final encrypted BLAKE3 digest.
 7. Write the package atomically through a temporary file.
-8. At runtime, restore the payload into a temporary runtime directory and launch the requested PE/JAR/Python interpreter.
-9. Remove the temporary runtime directory after process exit.
+8. **Keep the original filename and extension** (`.exe` stays `.exe`, `.jar` stays `.jar`, `.py` stays `.py`). Default output is `protected/<original-name>` next to the input so the source is never overwritten.
+9. **PE:** wrap the authenticated container in a Windows PE loader stub (overlay + `DEOBFS01` trailer). Double-clicking the output EXE prompts for the password, restores the payload into a private temp directory, launches it, then cleans up. The stub is the DEOBF runtime (`deobf-stub` / `deobf` / `deobf-gui`), not a code-virtualization engine.
+10. **JAR / Python:** the original extension is kept so the file still looks like that type, but a self-running JAR/Python stub is not produced yet. Open/run those outputs from DEOBF Studio (Runtime) or `deobf run`.
+11. Legacy `.deobf` containers remain readable via Restore / `unprotect`.
+12. Remove the temporary runtime directory after process exit.
 
-The package is therefore not meant to be opened as if it were the original PE/JAR/PY file. The supported model is **protect -> runtime launch**, or **protect -> restore** when an original-format file is explicitly required.
+This is **packaging + authenticated encryption + a Windows loader stub**, not VMProtect-style native virtualization.
 
 ## Why format-specific backends are required
 
@@ -29,9 +32,7 @@ A universal byte-level encryptor cannot preserve the normal behavior of arbitrar
 
 These transformations must be applied at the correct representation level. Encrypting a complete executable and then changing its extension is packaging, not native code virtualization.
 
-## VMProtect-inspired design goals
-
-VMProtect documents code virtualization, mutation, packing, memory/import protection, debugger detection, licensing, and virtual files as separate capabilities. DEOBF follows the same separation of concerns instead of implementing one oversized "encrypt everything" pass.
+## Design goals
 
 The target architecture is:
 

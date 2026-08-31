@@ -19,13 +19,13 @@
   </aside>
 
   <main>
-    <header><div><h1 id="title">Защита файла</h1><p id="subtitle">Настройте защиту и запустите обработку.</p></div><button class="ghost" id="theme">◐</button></header>
+    <header><div><h1 id="title">Защита файла</h1><p id="subtitle">Имя и расширение исходного файла сохраняются. PE запускается как обычный EXE.</p></div><button class="ghost" id="theme">◐</button></header>
 
     <section class="page active" id="protect">
       <div class="drop" id="drop"><div class="upload">↑</div><h2>Перетащите файл сюда</h2><p>или выберите файл с компьютера</p><input id="file" type="file" hidden><button class="primary" id="choose">Выбрать файл</button><div class="file" id="selected">Файл не выбран</div></div>
       <div class="grid">
         <div class="card"><h3>Профиль защиты</h3><select id="profile"><option value="safe">Safe — минимальное влияние</option><option value="balanced" selected>Balanced — рекомендуется</option><option value="maximum">Maximum — усиленная защита</option></select><p class="hint">Профиль определяет набор проверок и преобразований.</p></div>
-        <div class="card"><h3>Параметры</h3><label><input type="checkbox" checked> Проверка целостности</label><label><input type="checkbox" checked> Валидация результата</label><label><input type="checkbox"> Сохранять диагностический отчёт</label></div>
+        <div class="card"><h3>Параметры</h3><label><input type="checkbox" checked> Проверка целостности</label><label><input type="checkbox" checked> Валидация результата</label><label><input type="checkbox" checked> Сохранять исходное расширение</label></div>
       </div>
       <button class="protect" id="protectBtn" disabled>Защитить файл</button>
       <div class="progress" id="progress"><div></div></div><div class="log" id="log"></div>

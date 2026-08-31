@@ -28,5 +28,6 @@ pub fn parse_pe(data: &[u8]) -> Result<PeInfo> {
 }
 
 pub fn zip_has_manifest(data: &[u8]) -> bool {
-    data.windows(8).any(|w| w == b"META-INF/")
+    const NEEDLE: &[u8] = b"META-INF/";
+    data.windows(NEEDLE.len()).any(|w| w == NEEDLE)
 }
