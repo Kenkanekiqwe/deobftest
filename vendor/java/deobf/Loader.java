@@ -115,6 +115,42 @@ public final class Loader {
         return v.trim();
     }
 
+    /**
+     * Register mixin configs stripped from the visible fabric.mod.json so
+     * Mixin PREPARE does not run before payload.bin is decrypted. Called
+     * from Boot.onPreLaunch after Loader.install() injects the decrypted jar.
+     * No-op when Mixin is not on the classpath (Bukkit / java -jar).
+     */
+    public static void registerMixins() {
+        try {
+            install();
+        } catch (Throwable ignored) {
+            return;
+        }
+        String raw = meta.getProperty("mixin-configs", "");
+        if (raw == null) {
+            return;
+        }
+        Method add;
+        try {
+            Class mixins = Class.forName("org.spongepowered.asm.mixin.Mixins");
+            add = mixins.getMethod("addConfiguration", String.class);
+        } catch (Throwable ignored) {
+            return;
+        }
+        String[] parts = raw.split(",");
+        for (int i = 0; i < parts.length; i++) {
+            String name = parts[i].trim();
+            if (name.length() == 0) {
+                continue;
+            }
+            try {
+                add.invoke(null, name);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     static void addToLoader(ClassLoader cl, Path path) {
         if (cl == null || path == null) {
             return;

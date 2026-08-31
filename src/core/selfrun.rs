@@ -123,6 +123,7 @@ pub fn wrap_jar(payload: &[u8], key: &[u8; AUTO_KEY_LEN]) -> Result<Vec<u8>> {
     let original_main = jar_main_class(payload).unwrap_or_default();
     let mut plugin_main = String::new();
     let mut has_forge_meta = false;
+    let mut mixin_config_names: Vec<String> = Vec::new();
 
     let mut out_entries: Vec<(String, Vec<u8>)> = Vec::new();
     let mut seen = HashSet::new();
@@ -140,8 +141,19 @@ pub fn wrap_jar(payload: &[u8], key: &[u8; AUTO_KEY_LEN]) -> Result<Vec<u8>> {
         }
 
         if base == "fabric.mod.json" || base == "quilt.mod.json" {
-            let edited = prepend_prelaunch(&data).unwrap_or(data);
-            push_entry(&mut out_entries, &mut seen, &norm, edited);
+            match prepend_prelaunch(&data) {
+                Ok((edited, names)) => {
+                    for n in names {
+                        if !mixin_config_names.iter().any(|e| e == &n) {
+                            mixin_config_names.push(n);
+                        }
+                    }
+                    push_entry(&mut out_entries, &mut seen, &norm, edited);
+                }
+                Err(_) => {
+                    push_entry(&mut out_entries, &mut seen, &norm, data);
+                }
+            }
             continue;
         }
 
@@ -160,13 +172,6 @@ pub fn wrap_jar(payload: &[u8], key: &[u8; AUTO_KEY_LEN]) -> Result<Vec<u8>> {
             || base == "neoforge.mods.toml"
         {
             has_forge_meta = true;
-            push_entry(&mut out_entries, &mut seen, &norm, data);
-            continue;
-        }
-
-        if is_nested_jar_entry(&lower) {
-            // Nested libraries (Fabric JiJ etc.) must stay unmodified valid ZIPs.
-            // Wrapping them injects deobf.Boot and Fabric binds preLaunch to the library mod id.
             push_entry(&mut out_entries, &mut seen, &norm, data);
             continue;
         }
@@ -261,6 +266,7 @@ pub fn wrap_jar(payload: &[u8], key: &[u8; AUTO_KEY_LEN]) -> Result<Vec<u8>> {
         meta.push_str(&format!("original-plugin-main={plugin_main}\n"));
     }
     meta.push_str("full-original=true\n");
+    meta.push_str(&format!("mixin-configs={}\n", mixin_config_names.join(",")));
     push_entry(
         &mut out_entries,
         &mut seen,
@@ -320,15 +326,19 @@ fn should_skip_passthrough(name: &str) -> bool {
     {
         return true;
     }
-    // Mixin PREPARE runs when Knot loads deobf.Boot, before preLaunch decrypts
-    // payload.bin. .class files must remain real ZIP entries.
-    if lower.ends_with(".java")
+    // Classes and nested jars live only in encrypted payload.bin. Mixin JSON,
+    // refmap JSON, access wideners, assets, and patched fabric.mod.json stay.
+    if lower.ends_with(".class")
+        || lower.ends_with(".java")
         || lower.ends_with(".kt")
         || lower.ends_with(".kts")
         || lower.ends_with(".scala")
         || lower.ends_with(".mjs")
         || lower.ends_with(".map")
     {
+        return true;
+    }
+    if is_nested_jar_entry(&lower) {
         return true;
     }
     if is_signature_name(&lower) {
@@ -377,11 +387,15 @@ fn write_zip(entries: Vec<(String, Vec<u8>)>) -> Result<Vec<u8>> {
     Ok(cursor.into_inner())
 }
 
-fn prepend_prelaunch(json_bytes: &[u8]) -> Result<Vec<u8>> {
+fn prepend_prelaunch(json_bytes: &[u8]) -> Result<(Vec<u8>, Vec<String>)> {
     let mut v: Value = serde_json::from_slice(json_bytes).context("mod JSON")?;
     let obj = v
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("mod JSON is not an object"))?;
+    let mixin_config_names = extract_mixin_config_names(obj);
+    obj.remove("mixins");
+    obj.remove("mixin");
+    obj.remove("jars");
     let entrypoints = obj
         .entry("entrypoints")
         .or_insert_with(|| json!({}));
@@ -405,7 +419,41 @@ fn prepend_prelaunch(json_bytes: &[u8]) -> Result<Vec<u8>> {
             _ => *pre = json!(["deobf.Boot"]),
         }
     }
-    Ok(serde_json::to_vec_pretty(&v)?)
+    Ok((serde_json::to_vec_pretty(&v)?, mixin_config_names))
+}
+
+fn extract_mixin_config_names(obj: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut names = Vec::new();
+    for key in ["mixins", "mixin"] {
+        if let Some(v) = obj.get(key) {
+            collect_mixin_config_names(v, &mut names);
+        }
+    }
+    names
+}
+
+fn collect_mixin_config_names(v: &Value, names: &mut Vec<String>) {
+    match v {
+        Value::String(s) => push_mixin_name(names, s),
+        Value::Array(arr) => {
+            for item in arr {
+                collect_mixin_config_names(item, names);
+            }
+        }
+        Value::Object(o) => {
+            if let Some(Value::String(s)) = o.get("config") {
+                push_mixin_name(names, s);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_mixin_name(names: &mut Vec<String>, s: &str) {
+    let t = s.trim();
+    if !t.is_empty() && !names.iter().any(|e| e == t) {
+        names.push(t.to_string());
+    }
 }
 
 fn is_boot_entry(v: &Value) -> bool {

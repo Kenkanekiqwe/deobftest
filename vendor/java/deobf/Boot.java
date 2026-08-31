@@ -19,5 +19,6 @@ public final class Boot implements PreLaunchEntrypoint {
 
     public void onPreLaunch() {
         Loader.install();
+        Loader.registerMixins();
     }
 }
