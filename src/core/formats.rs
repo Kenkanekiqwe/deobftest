@@ -42,7 +42,6 @@ pub struct PeAnalysis {
 
 #[derive(Debug, Clone, Copy)]
 struct PeLayout {
-    pe_offset: usize,
     coff_offset: usize,
     optional_offset: usize,
     optional_size: usize,
@@ -119,7 +118,6 @@ fn pe_layout(data: &[u8]) -> Result<PeLayout> {
     }
 
     Ok(PeLayout {
-        pe_offset,
         coff_offset,
         optional_offset,
         optional_size,
