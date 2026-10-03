@@ -4,7 +4,7 @@ use std::io::{Cursor, Read, Write};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 use super::artifact::{detect, ArtifactKind};
-use super::formats::parse_pe;
+use super::formats::{parse_pe, strip_pe_debug_metadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendKind {
@@ -46,23 +46,38 @@ impl ProtectionBackend for PeBackend {
         matches!(detect(data), ArtifactKind::Pe) && parse_pe(data).is_ok()
     }
 
-    fn protect(&self, data: Vec<u8>) -> Result<(Vec<u8>, BackendReport)> {
+    fn protect(&self, mut data: Vec<u8>) -> Result<(Vec<u8>, BackendReport)> {
         let info = parse_pe(&data).context("PE validation failed")?;
+        let transformed = strip_pe_debug_metadata(&mut data)
+            .context("PE debug metadata transformation failed")?;
+        // Re-parse after writing header fields so malformed output never enters
+        // the authenticated container.
+        let output_info = parse_pe(&data).context("transformed PE validation failed")?;
+        if output_info.machine != info.machine || output_info.sections != info.sections {
+            bail!("PE transformation changed invariant header fields");
+        }
+        let mut notes = vec![
+            format!(
+                "validated PE: machine=0x{:04x}, sections={}",
+                info.machine, info.sections
+            ),
+        ];
+        if transformed {
+            notes.push("removed COFF timestamp/symbol-table references and cleared the PE debug data-directory entry".into());
+            notes.push("set IMAGE_FILE_DEBUG_STRIPPED; debug bytes may remain in section data".into());
+            notes.push("Authenticode signatures may be invalidated by PE header modification".into());
+        } else {
+            notes.push("PE debug metadata already stripped; no header changes required".into());
+        }
         Ok((
             data,
             BackendReport {
                 backend: self.kind(),
                 input_kind: ArtifactKind::Pe,
                 supported: true,
-                transformed: false,
+                transformed,
                 verified: true,
-                notes: vec![
-                    format!(
-                        "validated PE: machine=0x{:04x}, sections={}",
-                        info.machine, info.sections
-                    ),
-                    "PE bytes are intentionally not rewritten by the compatibility backend".into(),
-                ],
+                notes,
             },
         ))
     }
