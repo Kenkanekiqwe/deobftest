@@ -413,7 +413,7 @@ pub fn zip_has_manifest(data: &[u8]) -> bool {
 mod pe_debug_tests {
     use super::*;
 
-    fn minimal_pe(pe32_plus: bool) -> Vec<u8> {
+    pub(super) fn minimal_pe(pe32_plus: bool) -> Vec<u8> {
         let pe = 0x80usize;
         let optional_size = if pe32_plus { 0xF0usize } else { 0xE0usize };
         let section_table = pe + 24 + optional_size;
