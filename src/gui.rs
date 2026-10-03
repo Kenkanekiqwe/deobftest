@@ -12,7 +12,7 @@ use std::path::PathBuf;
 pub fn run() -> iced::Result {
     iced::application("DEOBF — Protection Studio", App::update, App::view)
         .theme(|_| deobf_theme())
-        .window_size(iced::Size::new(1280.0, 840.0))
+        .window_size(iced::Size::new(1440.0, 920.0))
         .run_with(|| (App::default(), Task::none()))
 }
 
@@ -39,8 +39,8 @@ enum Page {
 impl Page {
     fn label(self) -> &'static str {
         match self {
-            Self::Project => "Project",
-            Self::Options => "Options",
+            Self::Project => "EXE Protector",
+            Self::Options => "Protection",
             Self::Runtime => "Runtime",
             Self::Restore => "Restore",
         }
@@ -390,12 +390,15 @@ impl App {
         let sidebar = self.sidebar();
         let header = row![
             column![
-                text("Project workspace").size(22),
-                text("Protect software you own. Output keeps the original extension. No password by default.").size(13),
+                text("NATIVE APPLICATION PROTECTION").size(11),
+                text("DEOBF / Protection Studio").size(25),
+                text("Windows PE first · authenticated packaging · integrity verification").size(13),
             ]
             .spacing(4)
             .width(Length::Fill),
-            container(text(if self.busy { "WORKING" } else { "READY" }).size(13)).padding(10),
+            container(text(if self.busy { "● WORKING" } else { "● READY" }).size(13))
+                .padding(12)
+                .style(|_t| panel_style(if self.busy { Color::from_rgb8(78, 57, 24) } else { Color::from_rgb8(24, 62, 48) })),
         ]
         .align_y(Alignment::Center);
 
@@ -477,10 +480,10 @@ impl App {
                 Space::with_height(18.0),
                 nav,
                 Space::with_height(Length::Fill),
-                text("Output naming").size(12),
-                text(".exe stays .exe").size(12),
-                text(".jar stays .jar").size(12),
-                text(".py stays .py").size(12),
+                text("PRIMARY TARGET").size(11),
+                text("Windows PE / .exe").size(13),
+                text("JAR and Python supported").size(12),
+                text("Integrity + authenticated payload").size(11),
                 Space::with_height(8.0),
                 button(text("Protect").size(16))
                     .on_press(Message::Protect)
@@ -546,11 +549,32 @@ impl App {
     }
 
     fn project_page(&self) -> Element<'_, Message> {
+        let hero = container(
+            column![
+                text("WINDOWS EXECUTABLE").size(11),
+                text("Protect your .exe").size(30),
+                text("Package the original PE as an authenticated payload behind the DEOBF runtime stub. The output remains a launchable .exe.")
+                    .size(14),
+                row![
+                    container(text("PE validation").size(12)).padding(9),
+                    container(text("AEAD encryption").size(12)).padding(9),
+                    container(text("Integrity verification").size(12)).padding(9),
+                    container(text("Auto-key launch").size(12)).padding(9),
+                ]
+                .spacing(8)
+                .wrap(),
+            ]
+            .spacing(10),
+        )
+        .padding(22)
+        .width(Length::Fill)
+        .style(|_t| panel_style(Color::from_rgb8(22, 35, 54)));
+
         let analysis = container(
             column![
-                text("ANALYSIS").size(12),
+                text("FILE ANALYSIS").size(12),
                 text(if self.analysis.is_empty() {
-                    "No file analyzed yet. Select an input and press Analyze."
+                    "Select an executable, then run Analyze to inspect its detected type and architecture."
                 } else {
                     &self.analysis
                 })
@@ -562,54 +586,107 @@ impl App {
         .width(Length::Fill)
         .style(|_t| panel_style(Color::from_rgb8(28, 28, 34)));
 
+        let profile_note = match self.profile {
+            Profile::Safe => "Safe · compatibility-focused packaging",
+            Profile::Balanced => "Balanced · standard packaging and verification",
+            Profile::Maximum => "Maximum · strongest currently supported packaging profile",
+        };
+
         column![
-            self.file_fields(),
+            hero,
+            container(
+                column![
+                    text("INPUT / OUTPUT").size(12),
+                    self.file_fields(),
+                    text(profile_note).size(12),
+                ]
+                .spacing(12),
+            )
+            .padding(18)
+            .width(Length::Fill)
+            .style(|_t| panel_style(Color::from_rgb8(28, 28, 34))),
             row![
-                button(text("Analyze"))
+                button(text("Analyze PE"))
                     .on_press(Message::Analyze)
-                    .style(button::secondary),
-                button(text("Protect"))
+                    .style(button::secondary)
+                    .padding(11),
+                button(text("Protect executable"))
                     .on_press(Message::Protect)
-                    .style(button::success),
+                    .style(button::success)
+                    .padding(11),
             ]
             .spacing(10),
             analysis,
+            container(
+                column![
+                    text("ENGINE STATUS").size(11),
+                    text("Current PE backend validates and packages the original bytes; it does not yet virtualize native instructions or rewrite the PE code section.")
+                        .size(13),
+                    text("This is packaging and integrity protection, not a claim of VMProtect-equivalent code virtualization or unbreakable anti-reversing.")
+                        .size(12),
+                ]
+                .spacing(7),
+            )
+            .padding(15)
+            .width(Length::Fill)
+            .style(|_t| panel_style(Color::from_rgb8(43, 32, 25))),
         ]
         .spacing(14)
         .into()
     }
 
     fn options_page(&self) -> Element<'_, Message> {
-        let caps = self.profile.caps();
         column![
-            text("Protection options").size(18),
-            text("These flags follow the selected profile. Names are DEOBF terms, not third-party product options.")
+            text("Protection configuration").size(22),
+            text("The options below correspond to controls wired into the current engine. Unsupported PE transformations are not presented as active.")
                 .size(13),
             container(
                 column![
-                    checkbox("Strip debug metadata", caps.strip_debug),
-                    checkbox("Conceal strings", caps.protect_strings),
-                    checkbox("Rename identifiers", caps.rename_symbols),
-                    checkbox("Control-flow transforms", caps.control_flow),
-                    checkbox("Resource packaging", caps.resources),
-                    checkbox("Integrity / anti-tamper digest", caps.anti_tamper),
-                    Space::with_height(10.0),
-                    checkbox("Verify after protect", self.verify).on_toggle(Message::VerifyToggled),
-                    checkbox("Authenticated container (XChaCha20-Poly1305; Argon2id only if extra lock is on)", self.integrity)
-                        .on_toggle(Message::IntegrityToggled),
-                    checkbox("Windows runtime stub for PE (double-click to run, no password)", true),
-                    checkbox("Self-running JAR / Python loaders (java -jar / python, no password)", true),
-                    checkbox("Keep original file extension", true),
-                    checkbox("Embed auto-key in overlay (packer-style)", !self.lock_with_password),
+                    text("PROTECTION PROFILE").size(11),
+                    pick_list(&Profile::ALL[..], Some(self.profile), Message::ProfileChanged)
+                        .width(Length::Fill),
+                    text(match self.profile {
+                        Profile::Safe => "Prioritizes compatibility and structural validation.",
+                        Profile::Balanced => "Default profile for packaging, authenticated payloads and post-protect checks.",
+                        Profile::Maximum => "Strongest currently implemented profile; native code virtualization is not implemented.",
+                    })
+                    .size(13),
                 ]
                 .spacing(10),
             )
             .padding(18)
             .width(Length::Fill)
             .style(|_t| panel_style(Color::from_rgb8(28, 28, 34))),
-            text("Not implemented: code virtualization, debugger killing, or AV/EDR evasion.").size(12),
+            container(
+                column![
+                    text("INTEGRITY & VALIDATION").size(11),
+                    checkbox("Verify output after protection", self.verify)
+                        .on_toggle(Message::VerifyToggled),
+                    checkbox("Authenticated container / integrity metadata", self.integrity)
+                        .on_toggle(Message::IntegrityToggled),
+                    text("Authenticated encryption detects payload modification. Output verification checks the produced artifact; neither makes runtime memory or decrypted instructions impossible to inspect.")
+                        .size(12),
+                ]
+                .spacing(12),
+            )
+            .padding(18)
+            .width(Length::Fill)
+            .style(|_t| panel_style(Color::from_rgb8(28, 28, 34))),
+            container(
+                column![
+                    text("NATIVE PE ROADMAP").size(11),
+                    text("Not implemented yet: native instruction virtualization, control-flow rewriting, native string encryption, and debugger/analysis resistance. The current PE backend deliberately preserves original PE bytes before authenticated packaging.")
+                        .size(13),
+                    text("Do not treat the profile name as evidence that these transformations have run.")
+                        .size(12),
+                ]
+                .spacing(8),
+            )
+            .padding(18)
+            .width(Length::Fill)
+            .style(|_t| panel_style(Color::from_rgb8(43, 32, 25))),
         ]
-        .spacing(12)
+        .spacing(14)
         .into()
     }
 
