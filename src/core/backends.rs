@@ -4,7 +4,25 @@ use std::io::{Cursor, Read, Write};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 use super::artifact::{detect, ArtifactKind};
-use super::formats::{analyze_pe, strip_pe_debug_metadata};
+use super::formats::{analyze_pe, strip_pe_debug_metadata, verify_pe_checksum};
+
+fn executable_section_hashes(data: &[u8]) -> Result<Vec<(String, String)>> {
+    let analysis = analyze_pe(data)?;
+    let mut hashes = Vec::new();
+    for section in analysis.sections {
+        // IMAGE_SCN_MEM_EXECUTE: only hash initialized bytes present in the file.
+        if section.characteristics & 0x2000_0000 == 0 || section.raw_size == 0 {
+            continue;
+        }
+        let start = section.raw_offset as usize;
+        let end = start.checked_add(section.raw_size as usize)
+            .context("executable section range overflow")?;
+        let bytes = data.get(start..end)
+            .context("executable section extends beyond file")?;
+        hashes.push((section.name, blake3::hash(bytes).to_hex().to_string()));
+    }
+    Ok(hashes)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendKind {
@@ -48,6 +66,8 @@ impl ProtectionBackend for PeBackend {
 
     fn protect(&self, mut data: Vec<u8>) -> Result<(Vec<u8>, BackendReport)> {
         let before = analyze_pe(&data).context("PE section/import analysis failed")?;
+        let code_hashes_before = executable_section_hashes(&data)
+            .context("cannot fingerprint executable PE sections")?;
         let transformed = strip_pe_debug_metadata(&mut data)
             .context("PE debug metadata transformation failed")?;
 
@@ -58,6 +78,7 @@ impl ProtectionBackend for PeBackend {
             || after.info.sections != before.info.sections
             || after.sections != before.sections
             || after.imports != before.imports
+            || executable_section_hashes(&data)? != code_hashes_before
         {
             bail!("PE transformation changed section or import invariants");
         }
@@ -83,6 +104,18 @@ impl ProtectionBackend for PeBackend {
                 }
             ),
         ];
+        notes.push(format!(
+            "executable-section integrity baseline: {}",
+            if code_hashes_before.is_empty() {
+                "no initialized executable sections found".to_owned()
+            } else {
+                code_hashes_before.iter()
+                    .map(|(name, hash)| format!("{name}={}", &hash[..16]))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ));
+        notes.push("machine-code bytes were preserved by this metadata-only transformation; no instruction virtualization or rewriting is performed".into());
         if !before.imports.is_empty() {
             notes.push(format!(
                 "imports: {}",
@@ -93,8 +126,9 @@ impl ProtectionBackend for PeBackend {
             ));
         }
         if transformed {
-            notes.push("removed COFF timestamp/symbol-table references and cleared the PE debug data-directory entry".into());
-            notes.push("set IMAGE_FILE_DEBUG_STRIPPED; debug bytes may remain in section data".into());
+            notes.push("normalized PE metadata: COFF timestamp/symbol-table references cleared and debug directory entry cleared when present".into());
+            notes.push("IMAGE_FILE_DEBUG_STRIPPED flag enforced; debug bytes may remain in section data".into());
+            notes.push("PE optional-header checksum normalized after metadata processing".into());
             notes.push("Authenticode signatures may be invalidated by PE header modification".into());
         } else {
             notes.push("PE debug metadata already stripped; no header changes required".into());
@@ -115,6 +149,9 @@ impl ProtectionBackend for PeBackend {
 
     fn verify(&self, _original: &[u8], protected: &[u8]) -> Result<()> {
         analyze_pe(protected).context("protected PE has invalid headers, sections, or imports")?;
+        if !verify_pe_checksum(protected).context("cannot verify PE checksum")? {
+            bail!("protected PE checksum does not match its contents");
+        }
         Ok(())
     }
 }
