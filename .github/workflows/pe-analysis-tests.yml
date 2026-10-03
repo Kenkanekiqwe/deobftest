@@ -1,0 +1,25 @@
+name: PE instruction analysis
+
+on:
+  push:
+    branches:
+      - main
+      - feature/x86-instruction-analysis
+  pull_request:
+    branches:
+      - main
+      - feature/pe-verified-transform-pipeline
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Compile Rust library and binaries
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check library and binaries (tests disabled)
+        run: cargo check --no-default-features --lib --bins
