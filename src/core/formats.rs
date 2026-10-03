@@ -203,7 +203,7 @@ fn parse_imports(data: &[u8], layout: &PeLayout, sections: &[PeSection]) -> Resu
     }
 
     let table_offset = rva_to_offset(data, layout, sections, import_rva)?;
-    let descriptor_limit = ((import_size as usize) / 20).min(4096);
+    let descriptor_limit = ((import_size as usize) / 20).min(1024);
     let mut imports = Vec::new();
     let mut terminated = false;
 
@@ -224,12 +224,14 @@ fn parse_imports(data: &[u8], layout: &PeLayout, sections: &[PeSection]) -> Resu
         let thunk_rva = if original_thunk != 0 { original_thunk } else { first_thunk };
         let thunk_offset = rva_to_offset(data, layout, sections, thunk_rva)?;
         let mut symbols = Vec::new();
+        let mut thunk_terminated = false;
 
-        for thunk_index in 0..65536usize {
+        for thunk_index in 0..4096usize {
             let at = thunk_offset.checked_add(thunk_index.checked_mul(layout.pointer_size).context("thunk index overflow")?)
                 .context("thunk table overflow")?;
             let value = read_thunk(data, at, layout.pointer_size)?;
             if value == 0 {
+                thunk_terminated = true;
                 break;
             }
             let ordinal_flag = if layout.pointer_size == 4 { 0x8000_0000u64 } else { 0x8000_0000_0000_0000u64 };
@@ -241,9 +243,12 @@ fn parse_imports(data: &[u8], layout: &PeLayout, sections: &[PeSection]) -> Resu
                 let symbol_offset = hint_name.checked_add(2).context("import name offset overflow")?;
                 symbols.push(c_string(data, symbol_offset)?);
             }
-            if symbols.len() >= 65536 {
+            if symbols.len() >= 4096 {
                 bail!("PE import thunk table exceeds safety limit");
             }
+        }
+        if !thunk_terminated {
+            bail!("PE import thunk table has no terminator within safety limit");
         }
         imports.push(PeImport { library, symbols });
     }
