@@ -28,7 +28,9 @@ pub use engine::{
     analyze_only, has_auto_key, kind_name, protect, protect_file, unprotect_bytes, unprotect_file,
     AnalysisJson, EngineOptions, EngineResult,
 };
-pub use formats::{parse_pe, zip_has_manifest, BinaryFormat, PeInfo};
+pub use formats::{
+    analyze_pe, parse_pe, zip_has_manifest, BinaryFormat, PeAnalysis, PeImport, PeInfo, PeSection,
+};
 pub use limits::ResourceLimits;
 pub use loader::{
     detect_restored, launch_python, launch_restored, restore_and_detect, LoaderPolicy,
