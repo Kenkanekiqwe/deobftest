@@ -127,6 +127,12 @@ impl ProtectionBackend for PeBackend {
             instruction_analysis_before.direct_branch_count
         ));
         notes.push(format!(
+            "control-flow estimate: {} basic-block leaders, {} direct branches resolving to decoded instruction boundaries, {} conditional/call fallthrough edges",
+            instruction_analysis_before.basic_block_count,
+            instruction_analysis_before.resolved_direct_branch_count,
+            instruction_analysis_before.fallthrough_edge_count
+        ));
+        notes.push(format!(
             "direct-branch diagnostics: {} targets outside executable sections, {} targets not at decoded instruction boundaries",
             instruction_analysis_before.branch_targets_outside_executable_sections,
             instruction_analysis_before.branch_targets_not_on_instruction_boundary
