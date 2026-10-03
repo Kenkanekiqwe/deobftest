@@ -209,7 +209,6 @@ fn parse_imports(data: &[u8], layout: &PeLayout, sections: &[PeSection]) -> Resu
 
     for i in 0..descriptor_limit {
         let descriptor = table_offset.checked_add(i * 20).context("import table overflow")?;
-        let bytes = data.get(descriptor..descriptor + 20).context("truncated PE import descriptor")?;
         let original_thunk = read_u32(data, descriptor)?;
         let name_rva = read_u32(data, descriptor + 12)?;
         let first_thunk = read_u32(data, descriptor + 16)?;
@@ -315,22 +314,6 @@ pub fn strip_pe_debug_metadata(data: &mut [u8]) -> Result<bool> {
         bail!("truncated PE optional header");
     }
 
-    let mut changed = false;
-    for range in [coff + 4..coff + 8, coff + 8..coff + 16] {
-        if data[range.clone()].iter().any(|b| *b != 0) {
-            data[range].fill(0);
-            changed = true;
-        }
-    }
-
-    let characteristics_offset = coff + 18;
-    let characteristics = read_u16(data, characteristics_offset)?;
-    let stripped = characteristics | 0x0200;
-    if stripped != characteristics {
-        data[characteristics_offset..characteristics_offset + 2].copy_from_slice(&stripped.to_le_bytes());
-        changed = true;
-    }
-
     let magic = info.optional_magic.context("missing PE optional-header magic")?;
     let (directory_relative, count_relative) = match magic {
         0x10b => (96usize, 92usize),
@@ -340,13 +323,30 @@ pub fn strip_pe_debug_metadata(data: &mut [u8]) -> Result<bool> {
     if optional_size < count_relative + 4 || optional_size < directory_relative + 7 * 8 {
         bail!("PE optional header does not contain the debug data directory");
     }
+    // Validate every field before changing any bytes so an error never leaves a
+    // partially transformed input buffer behind.
     let directory_count = read_u32(data, optional + count_relative)?;
-    if directory_count > 6 {
-        let debug = optional + directory_relative + 6 * 8;
-        if data[debug..debug + 8].iter().any(|b| *b != 0) {
-            data[debug..debug + 8].fill(0);
+    let debug = optional + directory_relative + 6 * 8;
+    let characteristics_offset = coff + 18;
+    let characteristics = read_u16(data, characteristics_offset)?;
+
+    let mut changed = false;
+    for range in [coff + 4..coff + 8, coff + 8..coff + 16] {
+        if data[range.clone()].iter().any(|b| *b != 0) {
+            data[range].fill(0);
             changed = true;
         }
+    }
+
+    let stripped = characteristics | 0x0200;
+    if stripped != characteristics {
+        data[characteristics_offset..characteristics_offset + 2].copy_from_slice(&stripped.to_le_bytes());
+        changed = true;
+    }
+
+    if directory_count > 6 && data[debug..debug + 8].iter().any(|b| *b != 0) {
+        data[debug..debug + 8].fill(0);
+        changed = true;
     }
     Ok(changed)
 }
