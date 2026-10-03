@@ -69,26 +69,7 @@ impl Profile {
             Self::Maximum => "maximum",
         }
     }
-    fn caps(self) -> Caps {
-        match self {
-            Self::Safe => Caps {
-                strip_debug: false,
-                protect_strings: false,
-                rename_symbols: false,
-                control_flow: false,
-                resources: true,
-                anti_tamper: true,
-            },
-            Self::Balanced | Self::Maximum => Caps {
-                strip_debug: true,
-                protect_strings: true,
-                rename_symbols: true,
-                control_flow: true,
-                resources: true,
-                anti_tamper: true,
-            },
-        }
-    }
+
 }
 impl std::fmt::Display for Profile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -96,15 +77,6 @@ impl std::fmt::Display for Profile {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Caps {
-    strip_debug: bool,
-    protect_strings: bool,
-    rename_symbols: bool,
-    control_flow: bool,
-    resources: bool,
-    anti_tamper: bool,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunAs {
