@@ -43,7 +43,6 @@ struct SectionPass {
     report: ExecutableSectionAnalysis,
     instruction_offsets: HashSet<u64>,
     direct_targets: Vec<u64>,
-    instructions: Vec<(u64, u64, FlowControl, Option<u64>)>,
 }
 
 /// Bounded linear-sweep disassembly of initialized executable PE sections.
@@ -121,7 +120,7 @@ pub fn analyze_pe_code(data: &[u8]) -> Result<PeCodeAnalysis> {
             }
         }
         report.basic_block_count = leaders.len() as u64;
-        passes.push(SectionPass { report, instruction_offsets, direct_targets, instructions });
+        passes.push(SectionPass { report, instruction_offsets, direct_targets });
     }
 
     let all_boundaries: HashSet<u64> = passes.iter()
