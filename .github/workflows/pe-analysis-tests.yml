@@ -1,0 +1,20 @@
+name: PE instruction analysis tests
+
+on:
+  pull_request:
+    branches: ["main", "feature/pe-verified-transform-pipeline"]
+  push:
+    branches:
+      - "feature/x86-instruction-analysis"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Rust tests without optional GUI dependencies
+        run: cargo test --no-default-features --all-targets

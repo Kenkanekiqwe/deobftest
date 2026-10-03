@@ -2,6 +2,7 @@ pub mod analyzer;
 pub mod artifact;
 pub mod backends;
 pub mod compatible;
+pub mod code_analysis;
 pub mod container;
 pub mod engine;
 pub mod formats;
@@ -23,6 +24,7 @@ pub use backends::{
     backend_for, protect_with_backend, BackendKind, BackendReport, ProtectionBackend,
 };
 pub use compatible::{protect_compatible, verify_compatible, CompatibilityManifest};
+pub use code_analysis::{analyze_pe_code, ExecutableSectionAnalysis, PeCodeAnalysis};
 pub use container::{pack, unpack, ContainerInfo};
 pub use engine::{
     analyze_only, has_auto_key, kind_name, protect, protect_file, unprotect_bytes, unprotect_file,
