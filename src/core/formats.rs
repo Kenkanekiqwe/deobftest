@@ -336,8 +336,6 @@ pub fn calculate_pe_checksum(data: &[u8]) -> Result<u32> {
     Ok((sum as u32).wrapping_add(data.len() as u32))
 }
 
-/// Recompute and write IMAGE_OPTIONAL_HEADER.CheckSum.
-/// Returns true when the stored checksum changed.
 /// Return whether the stored PE checksum matches the calculated value.
 pub fn verify_pe_checksum(data: &[u8]) -> Result<bool> {
     let layout = pe_layout(data)?;
@@ -347,6 +345,8 @@ pub fn verify_pe_checksum(data: &[u8]) -> Result<bool> {
     Ok(read_u32(data, layout.optional_offset + 64)? == calculate_pe_checksum(data)?)
 }
 
+/// Recompute and write IMAGE_OPTIONAL_HEADER.CheckSum.
+/// Returns true when the stored checksum changed.
 pub fn recompute_pe_checksum(data: &mut [u8]) -> Result<bool> {
     let layout = pe_layout(data)?;
     if layout.optional_size < 68 {
