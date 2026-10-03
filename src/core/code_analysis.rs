@@ -211,6 +211,8 @@ mod tests {
         assert_eq!(report.executable_sections.len(), 1);
         assert!(report.instruction_count > 0);
         assert!(report.direct_branch_count >= 1);
+        assert!(report.basic_block_count >= 1);
+        assert!(report.resolved_direct_branch_count >= 1);
     }
 
     #[test]
