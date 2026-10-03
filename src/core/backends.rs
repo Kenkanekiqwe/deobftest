@@ -4,7 +4,7 @@ use std::io::{Cursor, Read, Write};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 use super::artifact::{detect, ArtifactKind};
-use super::formats::{analyze_pe, strip_pe_debug_metadata};
+use super::formats::{analyze_pe, strip_pe_debug_metadata, verify_pe_checksum};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendKind {
@@ -95,6 +95,7 @@ impl ProtectionBackend for PeBackend {
         if transformed {
             notes.push("removed COFF timestamp/symbol-table references and cleared the PE debug data-directory entry".into());
             notes.push("set IMAGE_FILE_DEBUG_STRIPPED; debug bytes may remain in section data".into());
+            notes.push("recomputed the PE optional-header checksum after metadata changes".into());
             notes.push("Authenticode signatures may be invalidated by PE header modification".into());
         } else {
             notes.push("PE debug metadata already stripped; no header changes required".into());
@@ -115,6 +116,9 @@ impl ProtectionBackend for PeBackend {
 
     fn verify(&self, _original: &[u8], protected: &[u8]) -> Result<()> {
         analyze_pe(protected).context("protected PE has invalid headers, sections, or imports")?;
+        if !verify_pe_checksum(protected).context("cannot verify PE checksum")? {
+            bail!("protected PE checksum does not match its contents");
+        }
         Ok(())
     }
 }
