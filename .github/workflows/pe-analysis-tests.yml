@@ -2,7 +2,7 @@ name: PE instruction analysis tests
 
 on:
   pull_request:
-    branches: ["main"]
+    branches: ["main", "feature/pe-verified-transform-pipeline"]
   push:
     branches:
       - "feature/x86-instruction-analysis"
