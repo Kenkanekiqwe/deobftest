@@ -29,7 +29,7 @@ pub use engine::{
     AnalysisJson, EngineOptions, EngineResult,
 };
 pub use formats::{
-    analyze_pe, parse_pe, zip_has_manifest, BinaryFormat, PeAnalysis, PeImport, PeInfo, PeSection,
+    analyze_pe, calculate_pe_checksum, parse_pe, recompute_pe_checksum, verify_pe_checksum, zip_has_manifest, BinaryFormat, PeAnalysis, PeImport, PeInfo, PeSection,
 };
 pub use limits::ResourceLimits;
 pub use loader::{
