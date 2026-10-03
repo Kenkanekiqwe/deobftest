@@ -4,7 +4,7 @@ use std::io::{Cursor, Read, Write};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 use super::artifact::{detect, ArtifactKind};
-use super::formats::{parse_pe, strip_pe_debug_metadata};
+use super::formats::{analyze_pe, strip_pe_debug_metadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendKind {
@@ -43,25 +43,55 @@ impl ProtectionBackend for PeBackend {
     }
 
     fn supports(&self, data: &[u8]) -> bool {
-        matches!(detect(data), ArtifactKind::Pe) && parse_pe(data).is_ok()
+        matches!(detect(data), ArtifactKind::Pe) && analyze_pe(data).is_ok()
     }
 
     fn protect(&self, mut data: Vec<u8>) -> Result<(Vec<u8>, BackendReport)> {
-        let info = parse_pe(&data).context("PE validation failed")?;
+        let before = analyze_pe(&data).context("PE section/import analysis failed")?;
         let transformed = strip_pe_debug_metadata(&mut data)
             .context("PE debug metadata transformation failed")?;
-        // Re-parse after writing header fields so malformed output never enters
-        // the authenticated container.
-        let output_info = parse_pe(&data).context("transformed PE validation failed")?;
-        if output_info.machine != info.machine || output_info.sections != info.sections {
-            bail!("PE transformation changed invariant header fields");
+
+        // Re-run structural analysis after editing headers. Section identities,
+        // mappings and import descriptors must survive this metadata-only pass.
+        let after = analyze_pe(&data).context("transformed PE validation failed")?;
+        if after.info.machine != before.info.machine
+            || after.info.sections != before.info.sections
+            || after.sections != before.sections
+            || after.imports != before.imports
+        {
+            bail!("PE transformation changed section or import invariants");
         }
+
+        let import_symbols: usize = before.imports.iter().map(|item| item.symbols.len()).sum();
         let mut notes = vec![
             format!(
-                "validated PE: machine=0x{:04x}, sections={}",
-                info.machine, info.sections
+                "validated PE: machine=0x{:04x}, sections={}, import libraries={}, imported symbols={}",
+                before.info.machine,
+                before.sections.len(),
+                before.imports.len(),
+                import_symbols
+            ),
+            format!(
+                "section map: {}",
+                if before.sections.is_empty() {
+                    "no sections".to_owned()
+                } else {
+                    before.sections.iter()
+                        .map(|s| format!("{} RVA=0x{:08x} raw=0x{:08x}+0x{:x}", s.name, s.virtual_address, s.raw_offset, s.raw_size))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                }
             ),
         ];
+        if !before.imports.is_empty() {
+            notes.push(format!(
+                "imports: {}",
+                before.imports.iter()
+                    .map(|item| format!("{} ({})", item.library, item.symbols.len()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         if transformed {
             notes.push("removed COFF timestamp/symbol-table references and cleared the PE debug data-directory entry".into());
             notes.push("set IMAGE_FILE_DEBUG_STRIPPED; debug bytes may remain in section data".into());
@@ -69,6 +99,7 @@ impl ProtectionBackend for PeBackend {
         } else {
             notes.push("PE debug metadata already stripped; no header changes required".into());
         }
+
         Ok((
             data,
             BackendReport {
@@ -83,7 +114,7 @@ impl ProtectionBackend for PeBackend {
     }
 
     fn verify(&self, _original: &[u8], protected: &[u8]) -> Result<()> {
-        parse_pe(protected).context("protected PE is structurally invalid")?;
+        analyze_pe(protected).context("protected PE has invalid headers, sections, or imports")?;
         Ok(())
     }
 }
@@ -223,7 +254,6 @@ fn transform_jar(data: &[u8]) -> Result<Vec<u8>> {
             let mut entry = archive.by_index(i).context("cannot read JAR entry")?;
             let name = entry.name().to_owned();
 
-            // Any existing signature becomes invalid after a JAR is transformed.
             if is_signature_entry(&name) {
                 continue;
             }
@@ -275,8 +305,6 @@ fn is_signature_entry(name: &str) -> bool {
             || upper.ends_with(".EC"))
 }
 
-// JVM class files are length-prefixed structures. Replacing only the UTF-8
-// constants used as debug attribute names leaves executable bytecode intact.
 fn transform_class_debug_attributes(data: &[u8]) -> Result<Vec<u8>> {
     if data.len() < 10 || &data[..4] != b"\xca\xfe\xba\xbe" {
         bail!("invalid class file")
@@ -309,7 +337,6 @@ fn transform_class_debug_attributes(data: &[u8]) -> Result<Vec<u8>> {
                     } else {
                         b"XSourceDebugExtension"
                     };
-                    // Keep the original constant length so every following offset stays valid.
                     out[start..end].fill(b'_');
                     out[start..start + replacement.len().min(len)]
                         .copy_from_slice(&replacement[..replacement.len().min(len)]);
