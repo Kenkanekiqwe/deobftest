@@ -308,6 +308,51 @@ pub fn analyze_pe(data: &[u8]) -> Result<PeAnalysis> {
 /// This intentionally does not rewrite executable instructions. The operation is
 /// limited to well-bounded PE header fields and rejects malformed optional headers.
 /// Authenticode signatures may become invalid after any PE header modification.
+/// Compute the PE checksum as defined for IMAGE_OPTIONAL_HEADER.CheckSum.
+/// The checksum DWORD itself is treated as zero during calculation.
+pub fn calculate_pe_checksum(data: &[u8]) -> Result<u32> {
+    let layout = pe_layout(data)?;
+    if layout.optional_size < 68 {
+        bail!("PE optional header is too short to contain CheckSum");
+    }
+    let checksum_offset = layout.optional_offset + 64;
+    let mut sum: u64 = 0;
+    let mut offset = 0usize;
+
+    while offset < data.len() {
+        if offset >= checksum_offset && offset < checksum_offset + 4 {
+            offset += 2;
+            continue;
+        }
+        let low = data[offset] as u16;
+        let high = if offset + 1 < data.len() { (data[offset + 1] as u16) << 8 } else { 0 };
+        sum += (low | high) as u64;
+        sum = (sum & 0xffff) + (sum >> 16);
+        offset += 2;
+    }
+
+    sum = (sum & 0xffff) + (sum >> 16);
+    sum = (sum & 0xffff) + (sum >> 16);
+    Ok((sum as u32).wrapping_add(data.len() as u32))
+}
+
+/// Recompute and write IMAGE_OPTIONAL_HEADER.CheckSum.
+/// Returns true when the stored checksum changed.
+pub fn recompute_pe_checksum(data: &mut [u8]) -> Result<bool> {
+    let layout = pe_layout(data)?;
+    if layout.optional_size < 68 {
+        bail!("PE optional header is too short to contain CheckSum");
+    }
+    let offset = layout.optional_offset + 64;
+    let checksum = calculate_pe_checksum(data)?;
+    let old = read_u32(data, offset)?;
+    if old == checksum {
+        return Ok(false);
+    }
+    data[offset..offset + 4].copy_from_slice(&checksum.to_le_bytes());
+    Ok(true)
+}
+
 pub fn strip_pe_debug_metadata(data: &mut [u8]) -> Result<bool> {
     let info = parse_pe(data)?;
     let pe = read_u32(data, 0x3c)? as usize;
@@ -353,6 +398,9 @@ pub fn strip_pe_debug_metadata(data: &mut [u8]) -> Result<bool> {
         data[debug..debug + 8].fill(0);
         changed = true;
     }
+    // Header edits invalidate the old checksum. Recompute even when the debug
+    // fields were already clear, so repeated runs normalize the PE header.
+    changed |= recompute_pe_checksum(data)?;
     Ok(changed)
 }
 
@@ -380,6 +428,7 @@ mod pe_debug_tests {
         let opt = pe + 24;
         data[opt..opt + 2].copy_from_slice(&(if pe32_plus { 0x20bu16 } else { 0x10bu16 }).to_le_bytes());
         data[opt + 60..opt + 64].copy_from_slice(&(section_table as u32).to_le_bytes());
+        data[opt + 64..opt + 68].copy_from_slice(&0xabcdef01u32.to_le_bytes());
         let (count, dirs) = if pe32_plus { (opt + 108, opt + 112) } else { (opt + 92, opt + 96) };
         data[count..count + 4].copy_from_slice(&16u32.to_le_bytes());
         data[dirs + 6 * 8..dirs + 6 * 8 + 4].copy_from_slice(&0x1234u32.to_le_bytes());
@@ -418,6 +467,7 @@ mod pe_debug_tests {
         assert_eq!(&data[pe + 8..pe + 20], &[0; 12]);
         assert_eq!(read_u16(&data, pe + 22).unwrap() & 0x0200, 0x0200);
         assert_eq!(&data[pe + 24 + 96 + 6 * 8..pe + 24 + 96 + 7 * 8], &[0; 8]);
+        assert_eq!(read_u32(&data, pe + 24 + 64).unwrap(), calculate_pe_checksum(&data).unwrap());
     }
 
     #[test]
@@ -426,6 +476,7 @@ mod pe_debug_tests {
         assert!(strip_pe_debug_metadata(&mut data).unwrap());
         let pe = 0x80usize;
         assert_eq!(&data[pe + 24 + 112 + 6 * 8..pe + 24 + 112 + 7 * 8], &[0; 8]);
+        assert_eq!(read_u32(&data, pe + 24 + 64).unwrap(), calculate_pe_checksum(&data).unwrap());
     }
 
     #[test]
@@ -441,5 +492,19 @@ mod pe_debug_tests {
         let section = 0x80 + 24 + 0xE0;
         data[section + 20..section + 24].copy_from_slice(&0xfffffff0u32.to_le_bytes());
         assert!(analyze_pe(&data).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod pe_checksum_tests {
+    use super::*;
+
+    #[test]
+    fn checksum_is_written_and_stable() {
+        let mut data = super::pe_debug_tests::minimal_pe(false);
+        assert!(recompute_pe_checksum(&mut data).unwrap());
+        assert_eq!(read_u32(&data, 0x80 + 24 + 64).unwrap(), calculate_pe_checksum(&data).unwrap());
+        assert!(!recompute_pe_checksum(&mut data).unwrap());
     }
 }
