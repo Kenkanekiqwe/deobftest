@@ -384,9 +384,9 @@ mod pe_debug_tests {
         data[count..count + 4].copy_from_slice(&16u32.to_le_bytes());
         data[dirs + 6 * 8..dirs + 6 * 8 + 4].copy_from_slice(&0x1234u32.to_le_bytes());
         data[dirs + 6 * 8 + 4..dirs + 6 * 8 + 8].copy_from_slice(&28u32.to_le_bytes());
-        data[pe + 4..pe + 8].copy_from_slice(&0x12345678u32.to_le_bytes());
-        data[pe + 8..pe + 12].copy_from_slice(&0x1000u32.to_le_bytes());
-        data[pe + 12..pe + 16].copy_from_slice(&3u32.to_le_bytes());
+        data[pe + 8..pe + 12].copy_from_slice(&0x12345678u32.to_le_bytes());
+        data[pe + 12..pe + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        data[pe + 16..pe + 20].copy_from_slice(&3u32.to_le_bytes());
 
         let section = section_table;
         data[section..section + 8].copy_from_slice(b".text\0\0\0");
@@ -414,7 +414,8 @@ mod pe_debug_tests {
         assert!(strip_pe_debug_metadata(&mut data).unwrap());
         assert!(!strip_pe_debug_metadata(&mut data).unwrap());
         let pe = 0x80usize;
-        assert_eq!(&data[pe + 4..pe + 16], &[0; 12]);
+        assert_eq!(&data[pe + 4..pe + 8], &[0x4c, 0x01, 0x01, 0x00]);
+        assert_eq!(&data[pe + 8..pe + 20], &[0; 12]);
         assert_eq!(read_u16(&data, pe + 22).unwrap() & 0x0200, 0x0200);
         assert_eq!(&data[pe + 24 + 96 + 6 * 8..pe + 24 + 96 + 7 * 8], &[0; 8]);
     }
