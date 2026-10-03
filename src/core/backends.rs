@@ -4,6 +4,7 @@ use std::io::{Cursor, Read, Write};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 use super::artifact::{detect, ArtifactKind};
+use super::code_analysis::analyze_pe_code;
 use super::formats::{analyze_pe, strip_pe_debug_metadata, verify_pe_checksum};
 
 fn executable_section_hashes(data: &[u8]) -> Result<Vec<(String, String)>> {
@@ -66,6 +67,8 @@ impl ProtectionBackend for PeBackend {
 
     fn protect(&self, mut data: Vec<u8>) -> Result<(Vec<u8>, BackendReport)> {
         let before = analyze_pe(&data).context("PE section/import analysis failed")?;
+        let instruction_analysis_before = analyze_pe_code(&data)
+            .context("PE instruction analysis failed")?;
         let code_hashes_before = executable_section_hashes(&data)
             .context("cannot fingerprint executable PE sections")?;
         let transformed = strip_pe_debug_metadata(&mut data)
@@ -78,9 +81,10 @@ impl ProtectionBackend for PeBackend {
             || after.info.sections != before.info.sections
             || after.sections != before.sections
             || after.imports != before.imports
+            || analyze_pe_code(&data)? != instruction_analysis_before
             || executable_section_hashes(&data)? != code_hashes_before
         {
-            bail!("PE transformation changed section or import invariants");
+            bail!("PE transformation changed section, import, or instruction-analysis invariants");
         }
 
         let import_symbols: usize = before.imports.iter().map(|item| item.symbols.len()).sum();
@@ -115,6 +119,19 @@ impl ProtectionBackend for PeBackend {
                     .join(", ")
             }
         ));
+        notes.push(format!(
+            "x86/x64 instruction analysis: {}-bit, {} decoded instructions, {} invalid decodes, {} direct branches",
+            instruction_analysis_before.bitness,
+            instruction_analysis_before.instruction_count,
+            instruction_analysis_before.invalid_instruction_count,
+            instruction_analysis_before.direct_branch_count
+        ));
+        notes.push(format!(
+            "direct-branch diagnostics: {} targets outside executable sections, {} targets not at decoded instruction boundaries",
+            instruction_analysis_before.branch_targets_outside_executable_sections,
+            instruction_analysis_before.branch_targets_not_on_instruction_boundary
+        ));
+        notes.extend(instruction_analysis_before.notes.iter().cloned());
         notes.push("machine-code bytes were preserved by this metadata-only transformation; no instruction virtualization or rewriting is performed".into());
         if !before.imports.is_empty() {
             notes.push(format!(
