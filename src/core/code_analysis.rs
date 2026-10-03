@@ -15,6 +15,9 @@ pub struct ExecutableSectionAnalysis {
     pub instruction_count: u64,
     pub invalid_instruction_count: u64,
     pub direct_branch_count: u64,
+    pub basic_block_count: u64,
+    pub resolved_direct_branch_count: u64,
+    pub fallthrough_edge_count: u64,
     pub branch_targets_outside_executable_sections: u64,
     pub branch_targets_not_on_instruction_boundary: u64,
 }
@@ -37,6 +40,7 @@ struct SectionPass {
     report: ExecutableSectionAnalysis,
     instruction_offsets: HashSet<u64>,
     direct_targets: Vec<u64>,
+    instructions: Vec<(u64, u64, FlowControl, Option<u64>)>,
 }
 
 /// Bounded linear-sweep disassembly of initialized executable PE sections.
@@ -65,11 +69,13 @@ pub fn analyze_pe_code(data: &[u8]) -> Result<PeCodeAnalysis> {
         let mut report = ExecutableSectionAnalysis {
             name: section.name.clone(), rva: section.virtual_address, raw_size: section.raw_size,
             instruction_count: 0, invalid_instruction_count: 0, direct_branch_count: 0,
+            basic_block_count: 0, resolved_direct_branch_count: 0, fallthrough_edge_count: 0,
             branch_targets_outside_executable_sections: 0,
             branch_targets_not_on_instruction_boundary: 0,
         };
         let mut instruction_offsets = HashSet::new();
         let mut direct_targets = Vec::new();
+        let mut instructions = Vec::new();
 
         while decoder.can_decode() {
             let instruction = decoder.decode();
@@ -80,6 +86,7 @@ pub fn analyze_pe_code(data: &[u8]) -> Result<PeCodeAnalysis> {
             instruction_offsets.insert(instruction.ip());
             if instruction.is_invalid() {
                 report.invalid_instruction_count += 1;
+                instructions.push((instruction.ip(), instruction.next_ip(), FlowControl::Next, None));
                 continue;
             }
             let flow = instruction.flow_control();
@@ -88,12 +95,30 @@ pub fn analyze_pe_code(data: &[u8]) -> Result<PeCodeAnalysis> {
             ) && matches!(
                 instruction.op0_kind(), OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
             );
-            if has_direct_target {
+            let target = if has_direct_target {
                 report.direct_branch_count += 1;
-                direct_targets.push(instruction.near_branch_target());
+                let target = instruction.near_branch_target();
+                direct_targets.push(target);
+                Some(target)
+            } else { None };
+            instructions.push((instruction.ip(), instruction.next_ip(), flow, target));
+        }
+        let local_boundaries: HashSet<u64> = instructions.iter().map(|i| i.0).collect();
+        let mut leaders = HashSet::new();
+        if let Some(first) = instructions.first() { leaders.insert(first.0); }
+        for (idx, (_, next_ip, flow, target)) in instructions.iter().enumerate() {
+            if let Some(target) = target {
+                if local_boundaries.contains(target) { leaders.insert(*target); }
+            }
+            if matches!(flow, FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch | FlowControl::Return | FlowControl::IndirectBranch) {
+                if instructions.get(idx + 1).is_some() { leaders.insert(*next_ip); }
+            }
+            if matches!(flow, FlowControl::ConditionalBranch | FlowControl::Call | FlowControl::IndirectCall) && instructions.get(idx + 1).is_some() {
+                report.fallthrough_edge_count += 1;
             }
         }
-        passes.push(SectionPass { report, instruction_offsets, direct_targets });
+        report.basic_block_count = leaders.len() as u64;
+        passes.push(SectionPass { report, instruction_offsets, direct_targets, instructions });
     }
 
     let all_boundaries: HashSet<u64> = passes.iter()
@@ -111,6 +136,8 @@ pub fn analyze_pe_code(data: &[u8]) -> Result<PeCodeAnalysis> {
                 pass.report.branch_targets_outside_executable_sections += 1;
             } else if !all_boundaries.contains(target) {
                 pass.report.branch_targets_not_on_instruction_boundary += 1;
+            } else {
+                pass.report.resolved_direct_branch_count += 1;
             }
         }
     }
@@ -131,6 +158,9 @@ pub fn analyze_pe_code(data: &[u8]) -> Result<PeCodeAnalysis> {
         instruction_count: sum(|s| s.instruction_count),
         invalid_instruction_count: sum(|s| s.invalid_instruction_count),
         direct_branch_count: sum(|s| s.direct_branch_count),
+        basic_block_count: sum(|s| s.basic_block_count),
+        resolved_direct_branch_count: sum(|s| s.resolved_direct_branch_count),
+        fallthrough_edge_count: sum(|s| s.fallthrough_edge_count),
         branch_targets_outside_executable_sections: sum(|s| s.branch_targets_outside_executable_sections),
         branch_targets_not_on_instruction_boundary: sum(|s| s.branch_targets_not_on_instruction_boundary),
         executable_sections, notes,
