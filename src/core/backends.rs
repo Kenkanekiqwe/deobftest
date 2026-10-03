@@ -126,9 +126,9 @@ impl ProtectionBackend for PeBackend {
             ));
         }
         if transformed {
-            notes.push("removed COFF timestamp/symbol-table references and cleared the PE debug data-directory entry".into());
-            notes.push("set IMAGE_FILE_DEBUG_STRIPPED; debug bytes may remain in section data".into());
-            notes.push("recomputed the PE optional-header checksum after metadata changes".into());
+            notes.push("normalized PE metadata: COFF timestamp/symbol-table references cleared and debug directory entry cleared when present".into());
+            notes.push("IMAGE_FILE_DEBUG_STRIPPED flag enforced; debug bytes may remain in section data".into());
+            notes.push("PE optional-header checksum normalized after metadata processing".into());
             notes.push("Authenticode signatures may be invalidated by PE header modification".into());
         } else {
             notes.push("PE debug metadata already stripped; no header changes required".into());
