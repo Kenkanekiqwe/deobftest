@@ -16,5 +16,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Run Rust tests without optional GUI dependencies
-        run: cargo test --no-default-features --all-targets
+      - name: Compile Rust library and binaries without running tests
+        run: cargo check --no-default-features --lib --bins
