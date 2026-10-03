@@ -514,6 +514,7 @@ mod pe_checksum_tests {
         let mut data = super::pe_debug_tests::minimal_pe(false);
         assert!(recompute_pe_checksum(&mut data).unwrap());
         assert_eq!(read_u32(&data, 0x80 + 24 + 64).unwrap(), calculate_pe_checksum(&data).unwrap());
+        assert!(verify_pe_checksum(&data).unwrap());
         assert!(!recompute_pe_checksum(&mut data).unwrap());
     }
 }
